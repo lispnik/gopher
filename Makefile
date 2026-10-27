@@ -6,6 +6,8 @@
 #   make deps    restore ocicl-vendored dependencies
 #   make certs   regenerate the self-signed certificates the TLS fixtures use
 #   make clean   remove compiled fasls, including the ASDF cache for this tree
+#   make capi    build capi/build/libgopher.dylib and capi/build/gopher.core
+#   make capi-test  build and run the C test program against them
 #
 # GOPHER_LIVE_TESTS=1 additionally runs the suite that talks to real servers.
 
@@ -13,7 +15,7 @@ LISP ?= sbcl
 BIN  := bin/gopher
 FIX  := test/fixtures
 
-.PHONY: all test build deps certs clean
+.PHONY: all test build deps certs clean capi capi-test
 
 all: test
 
@@ -38,7 +40,37 @@ certs:
 	    -subj "/CN=localhost" -keyout $(FIX)/$$n-key.pem -out $(FIX)/$$n-cert.pem; \
 	done
 
+# The C ABI.  libsbcl.a is SBCL's runtime as a static library (SBCL built
+# with --with-sb-linkable-runtime); its main.o is left out so the dylib does
+# not export a second main.  The core must come from the same SBCL build.
+CAPI     := capi/build
+SBCL_LIB ?= $(shell $(LISP) --noinform --non-interactive --no-userinit --no-sysinit \
+              --eval '(princ (namestring (sb-int:sbcl-homedir-pathname)))')
+CC       ?= cc
+CAPI_CFLAGS := -O2 -Wall -arch arm64 -fno-omit-frame-pointer
+
+capi: $(CAPI)/libgopher.dylib $(CAPI)/gopher.core
+
+$(CAPI)/gopher.core: gopher.asd src/*.lisp capi/capi.lisp
+	@mkdir -p $(CAPI)
+	$(LISP) --non-interactive \
+	  --eval '(asdf:load-system :gopher/capi)' \
+	  --eval '(gopher/capi:save-core "$(CAPI)/gopher.core")'
+
+$(CAPI)/libgopher.dylib: capi/host.c capi/gopher.h
+	@mkdir -p $(CAPI)/objs
+	cd $(CAPI)/objs && ar x $(SBCL_LIB)libsbcl.a && rm -f main.o __.SYMDEF*
+	$(CC) $(CAPI_CFLAGS) -dynamiclib -o $@ -install_name @rpath/libgopher.dylib \
+	  capi/host.c $(CAPI)/objs/*.o -lpthread -lm -ldl
+
+$(CAPI)/test: capi/test.c capi/gopher.h $(CAPI)/libgopher.dylib
+	$(CC) $(CAPI_CFLAGS) -o $@ capi/test.c -Icapi -L$(CAPI) -lgopher -Wl,-rpath,@executable_path
+
+capi-test: capi $(CAPI)/test
+	capi/run-test.sh
+
 clean:
+	rm -rf $(CAPI)
 	rm -f $(BIN)
 	rm -rf *.fasl src/*.fasl test/*.fasl
 	rm -rf $(HOME)/.cache/common-lisp/*/$(CURDIR)
