@@ -93,3 +93,16 @@
              (declare (ignore o c))
              (unless (uiop:symbol-call :gopher/test '#:run-tests)
                (error "The gopher test suite failed."))))
+
+(asdf:defsystem #:gopher/capi
+  :description "A C ABI for gopher: JSON-in/JSON-out callables for libgopher.dylib."
+  :author "Matthew Kennedy <burnsidemk@gmail.com>"
+  :maintainer "Matthew Kennedy <burnsidemk@gmail.com>"
+  :mailto "burnsidemk@gmail.com"
+  :license "MIT"
+  :version "0.1.0"
+  ;; Build with `make capi': the image is saved with :CALLABLE-EXPORTS and
+  ;; loaded by capi/host.c, linked against SBCL's libsbcl.a.
+  :depends-on (#:gopher #:babel #:bordeaux-threads)
+  :components ((:module "capi"
+                :components ((:file "capi")))))
