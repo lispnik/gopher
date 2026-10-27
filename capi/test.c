@@ -44,6 +44,15 @@ static void *fetch_menu(void *arg)
     return NULL;
 }
 
+struct batches { int calls; char seen[512]; };
+
+static void on_lines(void *context, const char *lines_json)
+{
+    struct batches *b = context;
+    b->calls++;
+    strncat(b->seen, lines_json, sizeof b->seen - strlen(b->seen) - 1);
+}
+
 static void *fetch_stall(void *arg)
 {
     char url[128];
@@ -134,6 +143,51 @@ int main(int argc, char **argv)
         int i;
         for (i = 0; i < 4; i++) pthread_create(&threads[i], NULL, fetch_menu, NULL);
         for (i = 0; i < 4; i++) pthread_join(threads[i], NULL);
+    }
+
+    /* Streaming: lines arrive in several callbacks, before the reply. */
+    {
+        struct batches b = { 0, "" };
+        snprintf(url, sizeof url, "gopher://127.0.0.1:%d/0/slow", port);
+        json = gopher_fetch_streaming(url, NULL, on_lines, &b);
+        check(contains(json, "\"ok\":true"), "streaming fetch succeeds", json);
+        check(b.calls >= 2, "lines arrived in more than one callback", b.seen);
+        check(contains(b.seen, "line 0") && contains(b.seen, "line 2") && !contains(b.seen, "\".\""),
+              "streamed lines are the document's lines", b.seen);
+        gopher_free(json);
+        json = gopher_fetch_streaming(url, NULL, NULL, NULL);
+        check(contains(json, "\"ok\":true"), "streaming with no callback", json);
+        gopher_free(json);
+    }
+
+    /* New options reach FETCH. */
+    snprintf(url, sizeof url, "gopher://127.0.0.1:%d/1/stall", port);
+    json = gopher_fetch(url, "{\"read_timeout\": 1, \"connect_timeout\": 5}");
+    check(contains(json, "\"type\":\"timeout-error\""), "read_timeout option", json);
+    gopher_free(json);
+    json = gopher_fetch(url, "{\"timeout\": 20, \"deadline\": 1}");
+    check(contains(json, "\"type\":\"timeout-error\""), "deadline option", json);
+    gopher_free(json);
+    json = gopher_fetch("guppy://127.0.0.1/", "{\"proxy\": \"socks5://127.0.0.1:9\"}");
+    check(contains(json, "\"type\":\"connection-error\""), "proxy option", json);
+    gopher_free(json);
+
+    /* Identities. */
+    {
+        char cert[] = "/tmp/gopher-capi-test-XXXXXX";
+        char key[64];
+        int fd = mkstemp(cert);
+        close(fd);
+        snprintf(key, sizeof key, "%s.key", cert);
+        json = gopher_make_identity(cert, key, "{\"common_name\": \"capi\", \"days\": 7}");
+        check(contains(json, "\"ok\":true") && contains(json, "\"fingerprint\":\"sha256:"),
+              "make an identity", json);
+        gopher_free(json);
+        json = gopher_make_identity(cert, key, "{\"key_type\": \"dsa\"}");
+        check(contains(json, "\"type\":\"json-error\""), "bad key_type is reported", json);
+        gopher_free(json);
+        unlink(cert);
+        unlink(key);
     }
 
     printf("%s (%d failure%s)\n", failures ? "FAILED" : "PASSED", failures,

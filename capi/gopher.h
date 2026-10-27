@@ -30,6 +30,11 @@ int gopher_init(const char *core_path);
  * Fetch URL.  OPTIONS_JSON is a JSON object (or NULL for none):
  *
  *   timeout                 seconds to connect and per read (default 30)
+ *   connect_timeout         seconds to connect (default: timeout)
+ *   read_timeout            seconds per read (default: timeout)
+ *   deadline                seconds for the whole fetch, redirects included
+ *   proxy                   "socks5://[user:pass@]host:port" (e.g. Tor);
+ *                           not usable with guppy://
  *   max_size                largest body in bytes; null for no limit
  *   tls                     "never" | "try" | "require"  (gopher:// only)
  *   verify                  "tofu" (default) | "none"
@@ -41,6 +46,8 @@ int gopher_init(const char *core_path);
  *   data / data_base64      upload body (Titan, Spartan), text or base64
  *   mime_type, token        Titan upload parameters
  *   gopher_plus             "+", "!", "$" or a Gopher+ view MIME type
+ *   gopher_plus_answers     answers to a Gopher+ +ASK form: an array whose
+ *                           entries are strings, or arrays of strings (AskL)
  *   default_scheme          scheme for a URL typed without one ("gopher")
  *   follow_redirects        default true;  max_redirects  default 5
  *   request_id              integer naming this fetch for gopher_cancel
@@ -73,6 +80,34 @@ int gopher_init(const char *core_path);
  * and json-error (bad options).
  */
 char *gopher_fetch(const char *url, const char *options_json);
+
+/*
+ * Called with each batch of document lines as a page downloads.
+ * LINES_JSON is a JSON array of line objects (the same shape as
+ * "document"."lines").  It is only valid during the call: copy it.  The
+ * callback runs on the thread that called gopher_fetch_streaming.
+ */
+typedef void (*gopher_lines_callback)(void *context, const char *lines_json);
+
+/*
+ * Like gopher_fetch, but CALLBACK (may be NULL) receives the document's
+ * lines while the body is still arriving, so a browser can draw a slow page
+ * progressively.  The lines delivered are exactly the final document's
+ * lines; the returned JSON is the same as gopher_fetch's.
+ */
+char *gopher_fetch_streaming(const char *url, const char *options_json,
+                             gopher_lines_callback callback, void *context);
+
+/*
+ * Create a Gemini identity: a self-signed client certificate written to
+ * CERTIFICATE_PATH and its private key to KEY_PATH (mode 0600), both PEM.
+ * OPTIONS_JSON: { "common_name": "...", "days": 3650,
+ *                 "key_type": "ec" | "rsa" | "ed25519" }.
+ * Returns { "ok": true, "fingerprint": "sha256:...", "not_after": <unix> }
+ * or an error object.  Use the files as client_certificate / client_key.
+ */
+char *gopher_make_identity(const char *certificate_path, const char *key_path,
+                           const char *options_json);
 
 /*
  * Cancel the fetch started with "request_id": ID.  Returns 1 if that id

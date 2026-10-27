@@ -16,6 +16,8 @@ ocicl install                  # dependencies (ocicl/ is gitignored)
 make test                      # hermetic suite
 GOPHER_LIVE_TESTS=1 make test  # plus real servers
 make build                     # bin/gopher via program-op
+make capi capi-test            # libgopher.dylib + gopher.core, C test
+make docs                      # docs/API.md from docstrings (CI checks it's current)
 make certs                     # regenerate test/fixtures/*.pem
 make clean                     # fasls + ASDF cache for this tree
 ```
@@ -32,10 +34,23 @@ Changing a struct's slots needs `make clean` first.
 Serial load order (see `gopher.asd`):
 
 ```
-package → conditions → url → encoding → transport → tofu → document → registry
-        → gemtext → gopher → gopher-plus → gemini → titan → spartan → nex
-        → guppy → finger → client → render          (cli is its own system)
+package → conditions → url → idna → encoding → transport → tofu → document
+        → registry → gemtext → gopher → gopher-plus → gemini → titan → spartan
+        → nex → parsers → guppy → finger → identity → cache → client → render
+        → docstrings                    (cli and capi are their own systems)
 ```
+
+- `parsers.lisp`: every text format is a LINE-PARSER (feed one line, get the
+  DOCUMENT-LINEs it completes). Both whole documents and streaming
+  (`:on-lines`, via the body streamer `read-body` drives) use it, so they can't
+  diverge. Handlers pass `:parse-as` (the MIME type, or `(mime . :gopher-text)`)
+  to `read-body`.
+- `read-chunk`: on plain fd-streams, `read-sequence` and `read-n-bytes` wait
+  for a full buffer. `fd-read-some` blocks for one byte, then takes only what
+  is already buffered. Don't change it back, or streaming over plain TCP stops
+  working.
+- Accessor and type docstrings live in `docstrings.lisp`. Every export needs
+  one, and `make docs` lists any that don't.
 
 - `registry.lisp`: `define-scheme-handler` maps schemes to
   `(lambda (url request) → response)`. `fetch` (`client.lisp`) only looks
@@ -58,10 +73,17 @@ package → conditions → url → encoding → transport → tofu → document 
 - Gopher paths are opaque: `?` and `#` are part of the selector, and `%09`
   separates the search and Gopher+ fields.
 
+- `capi/`: `define-alien-callable` entry points saved with
+  `save-lisp-and-die :callable-exports`. `host.c` holds the function pointers
+  the core fills in at `initialize_lisp`. When you add a callable, add it in
+  three places: `*callable-exports*`, a pointer in `host.c` (checked in
+  `gopher_init`), and `gopher.h`.
+
 ## Tests
 
 Each protocol has a fixture handler (a function of one binary stream) run by
 `start-server` / `with-server`, with `:tls t` and `:request-client-cert t`
 available. The Guppy fixture is a real UDP server that can drop or reorder
 packets. CLI tests call `clingon:run` with `gopher/cli:*exit-hook*` rebound,
-so the image doesn't quit.
+so the image doesn't quit. `socks-fixture` is a SOCKS5 relay (optional
+auth). `:request-client-cert :any` accepts any client certificate.

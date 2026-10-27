@@ -15,6 +15,8 @@ extern int initialize_lisp(int argc, char *argv[], char *envp[]);
 extern char **environ;
 
 char *(*gopher_lisp_fetch)(const char *, const char *) = NULL;
+char *(*gopher_lisp_fetch_streaming)(const char *, const char *, gopher_lines_callback, void *) = NULL;
+char *(*gopher_lisp_make_identity)(const char *, const char *, const char *) = NULL;
 int (*gopher_lisp_cancel)(long) = NULL;
 char *(*gopher_lisp_version)(void) = NULL;
 
@@ -39,7 +41,8 @@ int gopher_init(const char *core_path)
         argv[7] = NULL;
         initialize_lisp(7, argv, environ);
         initialized = gopher_lisp_fetch != NULL && gopher_lisp_cancel != NULL
-            && gopher_lisp_version != NULL;
+            && gopher_lisp_version != NULL && gopher_lisp_fetch_streaming != NULL
+            && gopher_lisp_make_identity != NULL;
     }
     result = initialized ? 0 : -1;
     pthread_mutex_unlock(&init_lock);
@@ -51,6 +54,25 @@ char *gopher_fetch(const char *url, const char *options_json)
     if (!initialized)
         return NULL;
     return gopher_lisp_fetch(url ? url : "", options_json ? options_json : "{}");
+}
+
+char *gopher_fetch_streaming(const char *url, const char *options_json,
+                             gopher_lines_callback callback, void *context)
+{
+    if (!initialized)
+        return NULL;
+    return gopher_lisp_fetch_streaming(url ? url : "", options_json ? options_json : "{}",
+                                       callback, context);
+}
+
+char *gopher_make_identity(const char *certificate_path, const char *key_path,
+                           const char *options_json)
+{
+    if (!initialized)
+        return NULL;
+    return gopher_lisp_make_identity(certificate_path ? certificate_path : "",
+                                     key_path ? key_path : "",
+                                     options_json ? options_json : "{}");
 }
 
 int gopher_cancel(long id)

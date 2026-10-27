@@ -11,6 +11,10 @@ C strings, and every result is JSON.
 ```c
 int   gopher_init(const char *core_path);           // once, at launch
 char *gopher_fetch(const char *url, const char *options_json);
+char *gopher_fetch_streaming(const char *url, const char *options_json,
+                             gopher_lines_callback callback, void *context);
+char *gopher_make_identity(const char *cert_path, const char *key_path,
+                           const char *options_json);
 int   gopher_cancel(long request_id);
 void  gopher_free(char *json);
 const char *gopher_version(void);
@@ -49,6 +53,13 @@ func fetch(_ url: String, options: [String: Any] = [:]) async throws -> Data {
 To cancel, pass `"request_id": n` in the options and call `gopher_cancel(n)`
 from any thread. The fetch then returns an error of type `request-cancelled`.
 
+To draw a page while it downloads, call `gopher_fetch_streaming` with a
+callback. It receives JSON arrays of lines, the same lines the final
+`document` holds, on the fetching thread. Copy the string and hop to the main
+actor to render. To make a Gemini identity, call
+`gopher_make_identity(certPath, keyPath, "{\"common_name\": \"me\"}")` and
+pass the paths as `client_certificate` / `client_key`.
+
 To handle a changed certificate, the first fetch returns `certificate-mismatch`
 with both fingerprints. If the user accepts, fetch again with
 `"accept_new_certificate": true`. Pass `"known_hosts": <path in Application
@@ -71,4 +82,5 @@ built by that same SBCL build, so rebuild both together.
 
 `make capi-test` runs `capi/test.c` against a small Python Gopher server. It
 covers init, a menu fetch, a server error, a connection error, bad options,
-calls from new threads, concurrent fetches, and cancelling from another thread.
+calls from new threads, concurrent fetches, cancelling from another thread,
+streaming callbacks, the timeout, deadline and proxy options, and identities.

@@ -12,6 +12,12 @@ def serve(conn):
                          b"0A text file\t/file\t127.0.0.1\t70\r\n.\r\n")
         elif selector == "/stall":
             time.sleep(30)
+        elif selector == "/slow":
+            # Three lines, sent apart, for the streaming test.
+            for i in range(3):
+                conn.sendall(("line %d\r\n" % i).encode())
+                time.sleep(0.1)
+            conn.sendall(b".\r\n")
         else:
             conn.sendall(b"3Not found\t\terror.host\t1\r\n.\r\n")
     finally:

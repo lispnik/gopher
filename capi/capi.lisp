@@ -246,6 +246,13 @@
   (let ((args '()))
     (macrolet ((arg (key value) `(let ((v ,value)) (when v (push v args) (push ,key args)))))
       (arg :timeout (option options "timeout"))
+      (arg :connect-timeout (option options "connect_timeout"))
+      (arg :read-timeout (option options "read_timeout"))
+      (arg :deadline (option options "deadline"))
+      (arg :proxy (option options "proxy"))
+      (arg :gopher-plus-answers
+           (let ((a (option options "gopher_plus_answers")))
+             (and a (map 'list (lambda (x) (if (stringp x) x (coerce x 'list))) a))))
       (when (option-present-p options "max_size")
         (push (option options "max_size") args) (push :max-size args))
       (arg :tls (let ((v (keyword-option (option options "tls") '(:never :try :require) "tls")))
@@ -355,9 +362,10 @@ later fetch with that ID is cancelled as soon as it starts."
                 (cons "presented_fingerprint"
                       (gopher:certificate-fingerprint (gopher:mismatch-certificate condition))))))))
 
-(defun fetch-json (url options-json)
+(defun fetch-json (url options-json &optional on-lines)
   "Fetch URL with OPTIONS-JSON (a JSON object string, or NIL) and return the
-result as a JSON string.  Never signals."
+result as a JSON string.  Never signals.  ON-LINES, if given, is called with
+each batch of parsed DOCUMENT-LINEs as the body arrives."
   (handler-case
       (let* ((options (if (or (null options-json) (string= options-json "")) '()
                           (parse-json options-json)))
@@ -368,7 +376,8 @@ result as a JSON string.  Never signals."
         (when (and id (not (integerp id)))
           (error 'json-error :message "request_id must be an integer"))
         (unwind-protect
-             (let ((args (fetch-arguments options (and id (handle-for-id id)))))
+             (let ((args (append (and on-lines (list :on-lines on-lines))
+                                 (fetch-arguments options (and id (handle-for-id id))))))
                (json-string
                 (response-json
                  (handler-bind ((gopher:certificate-mismatch
@@ -408,6 +417,45 @@ result as a JSON string.  Never signals."
     ((url sb-alien:system-area-pointer) (options sb-alien:system-area-pointer))
   (guarded (malloc-string (fetch-json (sap-string url) (sap-string options)))))
 
+(defun streaming-callback (callback context)
+  "A Lisp function that hands each batch of lines to the C CALLBACK as a JSON
+array.  The string is only valid during the call; C must copy it."
+  (lambda (lines)
+    (let* ((json (json-string (map 'vector #'line-json lines)))
+           (sap (malloc-string json)))
+      (unwind-protect
+           (sb-alien:alien-funcall
+            (sb-alien:sap-alien callback (function sb-alien:void sb-alien:system-area-pointer
+                                                   sb-alien:system-area-pointer))
+            context sap)
+        (sb-alien:free-alien (sb-alien:sap-alien sap (* (sb-alien:unsigned 8))))))))
+
+(sb-alien:define-alien-callable gopher-lisp-fetch-streaming sb-alien:system-area-pointer
+    ((url sb-alien:system-area-pointer) (options sb-alien:system-area-pointer)
+     (callback sb-alien:system-area-pointer) (context sb-alien:system-area-pointer))
+  (guarded (malloc-string (fetch-json (sap-string url) (sap-string options)
+                                      (and (/= 0 (sb-sys:sap-int callback))
+                                           (streaming-callback callback context))))))
+
+(defun make-identity-json (cert-path key-path options-json)
+  (handler-case
+      (let* ((options (if (or (null options-json) (string= options-json "")) '()
+                          (parse-json options-json)))
+             (type (keyword-option (option options "key_type") '(:ec :rsa :ed25519) "key_type"))
+             (info (gopher:make-identity cert-path key-path
+                                         :common-name (or (option options "common_name") "gemini identity")
+                                         :days (or (option options "days") 3650)
+                                         :key-type (if type (intern (string-upcase type) :keyword) :ec))))
+        (json-string (obj "ok" t
+                          "fingerprint" (gopher:certificate-fingerprint info)
+                          "not_after" (unix-time (gopher:certificate-not-after info)))))
+    (serious-condition (c) (json-string (error-json c)))))
+
+(sb-alien:define-alien-callable gopher-lisp-make-identity sb-alien:system-area-pointer
+    ((cert sb-alien:system-area-pointer) (key sb-alien:system-area-pointer)
+     (options sb-alien:system-area-pointer))
+  (guarded (malloc-string (make-identity-json (sap-string cert) (sap-string key) (sap-string options)))))
+
 (sb-alien:define-alien-callable gopher-lisp-cancel sb-alien:int
     ((id sb-alien:long))
   (handler-case (if (cancel-request-id id) 1 0)
@@ -416,7 +464,9 @@ result as a JSON string.  Never signals."
 (sb-alien:define-alien-callable gopher-lisp-version sb-alien:system-area-pointer ()
   (guarded (malloc-string *version*)))
 
-(defparameter *callable-exports* '(gopher-lisp-fetch gopher-lisp-cancel gopher-lisp-version))
+(defparameter *callable-exports*
+  '(gopher-lisp-fetch gopher-lisp-fetch-streaming gopher-lisp-make-identity
+    gopher-lisp-cancel gopher-lisp-version))
 
 (defun save-core (path)
   "Save the image to PATH as a core for libgopher.dylib.  Does not return."
