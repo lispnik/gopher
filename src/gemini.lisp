@@ -47,7 +47,7 @@ maps to the class's generic status, as the spec requires."
       (let ((status (gemini-status-keyword code)))
         (if (eq status :success)
             (let ((mime (if (string= meta "") "text/gemini; charset=utf-8" meta)))
-              (multiple-value-bind (body count) (read-body stream request url)
+              (multiple-value-bind (body count) (read-body stream request url :parse-as mime)
                 (make-response url protocol :success :code code :meta meta :mime-type mime
                                                      :body body :bytes-read count :connection conn)))
             (make-response url protocol status :code code :meta meta :connection conn))))))

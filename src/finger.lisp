@@ -14,6 +14,7 @@
          (user (or (request-query request) user)))
     (with-connection (conn request url (url-host url) (url-effective-port url))
       (send-line conn user)
-      (multiple-value-bind (body count) (read-body (connection-stream conn) request url)
+      (multiple-value-bind (body count) (read-body (connection-stream conn) request url
+                                                   :parse-as "text/plain")
         (make-response url :finger :success :meta "text/plain" :mime-type "text/plain"
                                             :body body :bytes-read count)))))

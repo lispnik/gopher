@@ -140,12 +140,6 @@ response.  Parsed once, on first call."
             ((string= mime "text/x-nex-directory") (parse-nex-directory text base-url))
             (t (parse-plain-text text))))))
 
-(defun parse-plain-text (text)
-  "A plain-text DOCUMENT: one :PREFORMATTED block."
-  (make-document :kind :text
-                 :lines (vector (make-document-line :kind :preformatted
-                                                    :text (string-right-trim '(#\Newline) text)))))
-
 (defun save-response (response pathname &key (if-exists :supersede))
   "Write RESPONSE's body to PATHNAME.  Returns PATHNAME."
   (with-open-file (out pathname :direction :output :element-type '(unsigned-byte 8)

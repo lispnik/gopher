@@ -18,12 +18,13 @@
   :license "MIT"
   :version "0.1.0"
   :serial t
-  :depends-on (#:usocket #:cl+ssl #:babel #:alexandria #:bordeaux-threads)
+  :depends-on (#:usocket #:cl+ssl #:babel #:alexandria #:bordeaux-threads #:sb-posix)
   :components ((:module "src"
                 :serial t
                 :components ((:file "package")
                              (:file "conditions")
                              (:file "url")
+                             (:file "idna")
                              (:file "encoding")
                              (:file "transport")
                              (:file "tofu")
@@ -36,10 +37,14 @@
                              (:file "titan")
                              (:file "spartan")
                              (:file "nex")
+                             (:file "parsers")
                              (:file "guppy")
                              (:file "finger")
+                             (:file "identity")
+                             (:file "cache")
                              (:file "client")
-                             (:file "render"))))
+                             (:file "render")
+                             (:file "docstrings"))))
   :in-order-to ((test-op (test-op #:gopher/test))))
 
 (asdf:defsystem #:gopher/cli
@@ -64,7 +69,7 @@
   :license "MIT"
   :version "0.1.0"
   :serial t
-  :depends-on (#:gopher #:gopher/cli #:fiveam #:usocket #:cl+ssl #:bordeaux-threads)
+  :depends-on (#:gopher #:gopher/cli #:fiveam #:usocket #:cl+ssl #:bordeaux-threads #:sb-posix)
   :components ((:module "test"
                 :serial t
                 :components ((:file "package")
@@ -80,6 +85,7 @@
                              (:file "guppy-tests")
                              (:file "transport-tests")
                              (:file "cli-tests")
+                             (:file "feature-tests")
                              (:file "live-tests"))))
   ;; ASDF ignores what a TEST-OP perform method returns, so a failing suite
   ;; must signal or `asdf:test-system' would report success.

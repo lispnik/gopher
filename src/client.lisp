@@ -14,14 +14,25 @@ https://, gopher:// to telnet:// -- is the caller's decision."
   (let ((handler (or (find-scheme-handler (url-scheme url))
                      (error 'unsupported-scheme :url url :scheme (url-scheme url)))))
     (with-network-errors (request url)
-      (prog1 (funcall handler url request)
-        (check-cancelled request url)))))
+      (check-deadline request url)
+      (flet ((run ()
+               (prog1 (funcall handler url request)
+                 (check-cancelled request url))))
+        ;; The deadline also interrupts waits that are blocked in the kernel.
+        (alexandria:if-let ((left (deadline-remaining request)))
+          (sb-sys:with-deadline (:seconds (max 0.001 left)) (run))
+          (run))))))
+
+(defun ensure-proxy (proxy)
+  (and proxy (ensure-url proxy)))
 
 (defun fetch (url &rest options
               &key (default-scheme "gopher")
-                (timeout *default-timeout*) (max-size *default-max-size*)
+                (timeout *default-timeout*) connect-timeout read-timeout deadline
+                (max-size *default-max-size*) (proxy *default-proxy*)
                 tls (verify :tofu) known-hosts client-certificate client-key
-                on-progress handle sink query data mime-type token gopher-plus
+                on-progress on-data on-lines handle sink cache
+                query data mime-type token gopher-plus gopher-plus-answers
                 (follow-redirects t) (max-redirects *default-max-redirects*))
   "Fetch URL (a string or URL) and return a RESPONSE.
 
@@ -32,33 +43,54 @@ subclasses).
 
   :DEFAULT-SCHEME      scheme for a URL typed without one (\"gopher\")
   :TIMEOUT             seconds for connecting and for each read
+  :CONNECT-TIMEOUT     seconds to connect (default: TIMEOUT)
+  :READ-TIMEOUT        seconds to wait for each read (default: TIMEOUT)
+  :DEADLINE            seconds for the whole fetch, redirects included
   :MAX-SIZE            largest body to hold in memory; NIL for no limit
+  :PROXY               SOCKS5 proxy URL, e.g. \"socks5://127.0.0.1:9050\" (Tor)
   :TLS                 for gopher://: :NEVER (default), :TRY or :REQUIRE
   :VERIFY              :TOFU (default), :NONE, or (lambda (cert-info host port))
   :KNOWN-HOSTS         a KNOWN-HOSTS store (default *KNOWN-HOSTS*)
   :CLIENT-CERTIFICATE  PEM file of a client certificate (Gemini identities)
   :CLIENT-KEY          PEM file of its private key
   :ON-PROGRESS         (lambda (bytes-so-far total-or-nil))
+  :ON-DATA             (lambda (octets)) for each chunk of the body as it arrives
+  :ON-LINES            (lambda (document-lines)) as lines of a text body are parsed;
+                       the same lines RESPONSE-DOCUMENT later returns
+  :CACHE               a RESPONSE-CACHE to answer from and fill
   :HANDLE              a REQUEST-HANDLE; CANCEL-REQUEST on it aborts the fetch
   :SINK                a binary output stream; the body goes there, not memory
   :QUERY               user input: Gemini/Guppy query, Gopher search, Spartan data
   :DATA                upload body (string, octets or pathname): Titan, Spartan
   :MIME-TYPE, :TOKEN   Titan upload parameters
   :GOPHER-PLUS         T (Gopher+ item), \"!\" / \"$\" (attributes) or a view's MIME type
+  :GOPHER-PLUS-ANSWERS answers to a Gopher+ +ASK form, one string per question
   :FOLLOW-REDIRECTS    follow same-scheme redirects (default T)
   :MAX-REDIRECTS       limit on redirects followed (default 5)"
   (declare (ignore options))
-  (let ((request (%make-request :timeout timeout :max-size max-size :tls tls :verify verify
+  (let ((request (%make-request :timeout timeout :connect-timeout connect-timeout
+                                :read-timeout read-timeout
+                                :deadline (and deadline
+                                               (+ (get-internal-real-time)
+                                                  (round (* deadline internal-time-units-per-second))))
+                                :proxy (ensure-proxy proxy)
+                                :on-data on-data :on-lines on-lines
+                                :gopher-plus-answers gopher-plus-answers
+                                :max-size max-size :tls tls :verify verify
                                 :known-hosts known-hosts
                                 :client-certificate client-certificate :client-key client-key
-                                :on-progress on-progress :handle handle :sink sink
+                                :on-progress on-progress :cancel-handle handle :sink sink
                                 :query query :data data :mime-type mime-type :token token
                                 :gopher-plus gopher-plus
                                 :follow-redirects follow-redirects :max-redirects max-redirects))
         (current (ensure-url url :default-scheme default-scheme))
         (chain '()))
     (loop
-      (let ((response (call-handler current request)))
+      (let ((response (or (and cache (cacheable-request-p request)
+                               (cache-lookup cache current request))
+                          (let ((fresh (call-handler current request)))
+                            (when cache (cache-store cache current fresh request))
+                            fresh))))
         (setf (response-redirects response) (reverse chain))
         (unless (and (response-redirect-p response) follow-redirects)
           (return response))

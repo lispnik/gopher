@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL, ocicl and OpenSSL
+        run: |
+          brew install sbcl ocicl openssl@3
+          ocicl setup > ~/.sbclrc
+
+      - name: Restore dependencies
+        run: ocicl install
+
+      - name: Test
+        run: make test
+
+      - name: Build the CLI
+        run: |
+          make build
+          bin/gopher --version
+
+      - name: API reference is current
+        run: |
+          make docs
+          git diff --exit-code docs/API.md

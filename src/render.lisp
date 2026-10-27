@@ -8,27 +8,36 @@
     (:sound "SND") (:video "VID") (:document "DOC") (:html "HTML") (:telnet "TEL")
     (:mirror "MIR") (:cso "CSO") (:calendar "CAL") (t "???")))
 
+(defun render-line (line links &key (stream *standard-output*) (show-urls t))
+  "Write one DOCUMENT-LINE.  LINKS is an adjustable vector with a fill
+pointer; each link is pushed onto it and numbered by its new length.  Lines
+that came from a Gopher menu (they have an item type) are drawn as a menu."
+  (let ((menu (line-item-type line)))
+    (flet ((link (prefix)
+             (vector-push-extend (line-url line) links)
+             (format stream "~&[~D]~A ~A~:[~; <~A>~]~%" (length links) prefix (line-text line)
+                     (and show-urls (not menu)) (line-url line))))
+      (ecase (line-kind line)
+        (:text (format stream "~&~:[~;      ~]~A~%" menu (line-text line)))
+        (:error (format stream "~&!! ~A~%" (line-text line)))
+        (:heading (format stream "~&~A ~A~%"
+                          (make-string (or (line-level line) 1) :initial-element #\#)
+                          (line-text line)))
+        (:list-item (format stream "~&  * ~A~%" (line-text line)))
+        (:quote (format stream "~&  > ~A~%" (line-text line)))
+        (:preformatted (format stream "~&~A~%" (line-text line)))
+        (:input-prompt (link " ?"))
+        (:link (link (if menu (format nil " (~A)" (gopher-type-tag line)) ""))))))
+  links)
+
+(defun make-link-vector () (make-array 0 :adjustable t :fill-pointer 0))
+
 (defun render-document (document &key (stream *standard-output*) (show-urls t))
   "Write DOCUMENT to STREAM as text.  Links are numbered from 1.  Returns the
 link URLs as a vector, so link N is (aref result (1- N))."
-  (let ((links (make-array 0 :adjustable t :fill-pointer 0))
-        (menu (eq (document-kind document) :menu)))
+  (let ((links (make-link-vector)))
     (loop for line across (document-lines document)
-          do (flet ((link (prefix)
-                      (vector-push-extend (line-url line) links)
-                      (format stream "~&[~D]~A ~A~:[~; <~A>~]~%" (length links) prefix (line-text line)
-                              (and show-urls (not menu)) (line-url line))))
-               (ecase (line-kind line)
-                 (:text (format stream "~&~:[~;      ~]~A~%" menu (line-text line)))
-                 (:error (format stream "~&!! ~A~%" (line-text line)))
-                 (:heading (format stream "~&~A ~A~%"
-                                   (make-string (or (line-level line) 1) :initial-element #\#)
-                                   (line-text line)))
-                 (:list-item (format stream "~&  * ~A~%" (line-text line)))
-                 (:quote (format stream "~&  > ~A~%" (line-text line)))
-                 (:preformatted (format stream "~&~A~%" (line-text line)))
-                 (:input-prompt (link " ?"))
-                 (:link (link (if menu (format nil " (~A)" (gopher-type-tag line)) ""))))))
+          do (render-line line links :stream stream :show-urls show-urls))
     links))
 
 (defun render-response (response &key (stream *standard-output*) (show-urls t))

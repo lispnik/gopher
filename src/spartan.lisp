@@ -26,7 +26,7 @@
                (meta (if (> (length header) 1) (trim-ws (subseq header 1)) "")))
           (case code
             (2 (let ((mime (if (string= meta "") "text/gemini; charset=utf-8" meta)))
-                 (multiple-value-bind (body count) (read-body stream request url)
+                 (multiple-value-bind (body count) (read-body stream request url :parse-as mime)
                    (make-response url :spartan :success :code 2 :meta meta :mime-type mime
                                                         :body body :bytes-read count))))
             (3 (make-response url :spartan :redirect :code 3 :meta meta))

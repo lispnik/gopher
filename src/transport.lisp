@@ -17,10 +17,21 @@
 
 (defvar *default-max-redirects* 5)
 
+(defvar *default-proxy* nil
+  "A SOCKS5 proxy URL (\"socks5://[user:pass@]host:port\") FETCH uses when no
+:PROXY is given, or NIL.  Host names are resolved by the proxy, so this
+works for Tor (socks5://127.0.0.1:9050) and .onion addresses.")
+
 ;;; The options of one request, passed to every protocol handler.
 
 (defstruct (request (:constructor %make-request))
   (timeout *default-timeout*)
+  (connect-timeout nil)     ; seconds to connect; NIL means TIMEOUT
+  (read-timeout nil)        ; seconds per read; NIL means TIMEOUT
+  (deadline nil)            ; absolute INTERNAL-REAL-TIME for the whole fetch, or NIL
+  (proxy nil)               ; URL of a SOCKS5 proxy, or NIL
+  (on-data nil)             ; (lambda (octets)) for each chunk of body as it arrives
+  (on-lines nil)            ; (lambda (document-lines)) as complete lines are parsed
   (max-size *default-max-size*)
   (tls nil)                 ; :never :try :require, NIL for the scheme default
   (verify :tofu)            ; :tofu, :none, or a function of a CERTIFICATE-INFO
@@ -28,13 +39,14 @@
   (client-certificate nil)  ; PEM file
   (client-key nil)          ; PEM file
   (on-progress nil)         ; (lambda (bytes-so-far total-or-nil))
-  (handle nil)              ; REQUEST-HANDLE, for cancellation
+  (cancel-handle nil)       ; REQUEST-HANDLE, for cancellation
   (sink nil)                ; binary output stream that receives the body
   (query nil)               ; user input: Gemini/Guppy query, Gopher search, Spartan data
   (data nil)                ; upload body (octets or string), Titan and Spartan
   (mime-type nil)           ; upload MIME type
   (token nil)               ; Titan token
   (gopher-plus nil)         ; Gopher+ request suffix: T, "!", "$", or a view MIME type
+  (gopher-plus-answers nil) ; list of strings answering a +ASK form
   (follow-redirects t)
   (max-redirects *default-max-redirects*))
 
@@ -57,24 +69,50 @@ more than once.  Shutting the socket down wakes a reader blocked on it."
   t)
 
 (defun register-socket (request socket)
-  (alexandria:when-let ((h (request-handle request)))
+  (alexandria:when-let ((h (request-cancel-handle request)))
     (bt:with-lock-held ((request-handle-lock h))
       (push socket (request-handle-sockets h))
       (when (request-handle-cancelled-p h)
         (ignore-errors (usocket:socket-shutdown socket :io))))))
 
 (defun unregister-socket (request socket)
-  (alexandria:when-let ((h (request-handle request)))
+  (alexandria:when-let ((h (request-cancel-handle request)))
     (bt:with-lock-held ((request-handle-lock h))
       (setf (request-handle-sockets h) (remove socket (request-handle-sockets h))))))
 
 (defun cancelled-p (request)
-  (alexandria:when-let ((h (request-handle request)))
+  (alexandria:when-let ((h (request-cancel-handle request)))
     (request-handle-cancelled-p h)))
 
 (defun check-cancelled (request url)
   (when (cancelled-p request)
-    (error 'request-cancelled :url url)))
+    (error 'request-cancelled :url url))
+  (check-deadline request url))
+
+;;; Timeouts
+
+(defun request-connect-timeout* (request)
+  (or (request-connect-timeout request) (request-timeout request)))
+
+(defun request-read-timeout* (request)
+  (or (request-read-timeout request) (request-timeout request)))
+
+(defun deadline-remaining (request)
+  "Seconds left before the request's deadline, or NIL if it has none."
+  (alexandria:when-let ((d (request-deadline request)))
+    (/ (- d (get-internal-real-time)) internal-time-units-per-second)))
+
+(defun check-deadline (request url)
+  (let ((left (deadline-remaining request)))
+    (when (and left (<= left 0))
+      (error 'timeout-error :url url :message "Deadline exceeded"))))
+
+(defun shortest-timeout (request timeout)
+  "TIMEOUT, cut down to what is left before the deadline."
+  (let ((left (deadline-remaining request)))
+    (cond ((null left) timeout)
+          ((null timeout) (max 0.01 left))
+          (t (max 0.01 (min timeout left))))))
 
 ;;; Error translation
 
@@ -209,16 +247,85 @@ REQUEST-CANCELLED."
   (or (find #\: host)
       (every (lambda (c) (or (digit-char-p c) (char= c #\.))) host)))
 
-(defun open-connection (request url host port &key tls)
-  "Connect to HOST:PORT.  With TLS true, also run the TLS handshake and the
-TOFU check for that host.  Returns a CONNECTION whose stream reads and writes
-octets."
-  (check-cancelled request url)
-  (let ((socket (usocket:socket-connect host port
-                                        :element-type '(unsigned-byte 8)
-                                        :timeout (request-timeout request)
-                                        :nodelay t)))
+(defun tcp-connect (request host port)
+  (usocket:socket-connect host port
+                          :element-type '(unsigned-byte 8)
+                          :connection-timeout (shortest-timeout request (request-connect-timeout* request))
+                          :read-timeout (shortest-timeout request (request-read-timeout* request))
+                          :nodelay t))
+
+;;; SOCKS5 (RFC 1928, username/password auth RFC 1929).  The target host name
+;;; is sent to the proxy, which resolves it.
+
+(defparameter *socks-replies*
+  '((1 . "general SOCKS server failure") (2 . "connection not allowed by ruleset")
+    (3 . "network unreachable") (4 . "host unreachable") (5 . "connection refused")
+    (6 . "TTL expired") (7 . "command not supported") (8 . "address type not supported")))
+
+(defun socks-read (stream n url)
+  (let* ((buf (make-array n :element-type '(unsigned-byte 8)))
+         (got (read-sequence buf stream)))
+    (unless (= got n)
+      (error 'connection-error :url url :message "SOCKS proxy closed the connection"))
+    buf))
+
+(defun socks-connect (request url proxy host port)
+  "Connect to HOST:PORT through the SOCKS5 PROXY (a URL).  Returns the socket,
+whose stream is now a tunnel to the target."
+  (unless (member (url-scheme proxy) '("socks5" "socks5h") :test #'string=)
+    (error 'connection-error :url url
+                             :message (format nil "Unsupported proxy scheme ~S" (url-scheme proxy))))
+  (let* ((socket (tcp-connect request (url-host proxy) (or (url-port proxy) 1080)))
+         (stream (usocket:socket-stream socket))
+         (ok nil))
     (register-socket request socket)
+    (unwind-protect
+         (flet ((out (&rest parts)
+                  (dolist (p parts)
+                    (if (integerp p) (write-byte p stream) (write-sequence p stream)))
+                  (force-output stream)))
+           (let* ((userinfo (url-userinfo proxy))
+                  (colon (and userinfo (position #\: userinfo)))
+                  (user (and userinfo (encode-text (percent-decode (subseq userinfo 0 colon)))))
+                  (pass (and userinfo (encode-text (if colon (percent-decode (subseq userinfo (1+ colon))) "")))))
+             (if user (out 5 2 0 2) (out 5 1 0))
+             (let ((reply (socks-read stream 2 url)))
+               (case (aref reply 1)
+                 (0)
+                 (2 (unless user
+                      (error 'connection-error :url url :message "SOCKS proxy wants a password"))
+                  (out 1 (length user) user (length pass) pass)
+                  (unless (zerop (aref (socks-read stream 2 url) 1))
+                    (error 'connection-error :url url :message "SOCKS proxy rejected the credentials")))
+                 (t (error 'connection-error :url url :message "SOCKS proxy offered no usable authentication"))))
+             (let ((name (encode-text host)))
+               (out 5 1 0 3 (length name) name (ldb (byte 8 8) port) (ldb (byte 8 0) port)))
+             (let* ((head (socks-read stream 4 url))
+                    (rep (aref head 1)))
+               (unless (zerop rep)
+                 (error 'connection-error :url url
+                                          :message (format nil "SOCKS proxy: ~A"
+                                                           (or (cdr (assoc rep *socks-replies*))
+                                                               (format nil "error ~D" rep)))))
+               ;; Skip the bound address and port.
+               (socks-read stream (+ 2 (ecase (aref head 3)
+                                         (1 4) (4 16) (3 (aref (socks-read stream 1 url) 0))))
+                           url))
+             (setf ok t)
+             socket))
+      (unless ok
+        (unregister-socket request socket)
+        (ignore-errors (usocket:socket-close socket))))))
+
+(defun open-connection (request url host port &key tls)
+  "Connect to HOST:PORT, through the request's proxy if it has one.  With TLS
+true, also run the TLS handshake and the TOFU check for that host.  Returns a
+CONNECTION whose stream reads and writes octets."
+  (check-cancelled request url)
+  (let ((socket (if (request-proxy request)
+                    (socks-connect request url (request-proxy request) host port)
+                    (tcp-connect request host port))))
+    (unless (request-proxy request) (register-socket request socket))
     ;; Clean up on a non-local exit only.  Not HANDLER-BIND: a TOFU mismatch
     ;; is signalled with restarts, and accepting it continues on this socket.
     (let ((ok nil))
@@ -308,18 +415,39 @@ Returns NIL on EOF before any byte.  Signals PROTOCOL-ERROR past MAX bytes."
           n)
       (cl+ssl::ssl-error () 0))))
 
+(defun fd-read-some (stream buffer end)
+  ;; READ-SEQUENCE (and READ-N-BYTES) on an fd-stream wait for the whole
+  ;; buffer.  Block for one byte instead, then take only what the stream has
+  ;; already buffered, which cannot block.
+  (let ((b (read-byte stream nil nil)))
+    (if (null b)
+        0
+        (let* ((ibuf (sb-impl::fd-stream-ibuf stream))
+               (avail (if ibuf (- (sb-impl::buffer-tail ibuf) (sb-impl::buffer-head ibuf)) 0))
+               (n (min avail (1- end))))
+          (setf (aref buffer 0) b)
+          (when (plusp n) (read-sequence buffer stream :start 1 :end (1+ n)))
+          (1+ n)))))
+
 (defun read-chunk (stream buffer end)
   "Read at least one byte into BUFFER (up to END) and return the count, or 0
-at EOF."
-  (if (typep stream 'cl+ssl::ssl-stream)
-      (ssl-read-chunk stream buffer end)
-      (read-sequence buffer stream :end end)))
+at EOF.  Returns as soon as some bytes are available, so streaming callers
+see data as it arrives rather than when a buffer fills."
+  (cond ((typep stream 'cl+ssl::ssl-stream)
+         (ssl-read-chunk stream buffer end))
+        ((typep stream 'sb-sys:fd-stream)
+         (fd-read-some stream buffer end))
+        (t (read-sequence buffer stream :end end))))
 
-(defun read-body (stream request url &key (initial nil) (total nil))
+(defun read-body (stream request url &key (initial nil) (total nil) parse-as)
   "Read STREAM to EOF.  Returns the octets, or NIL when the request has a SINK
 (the bytes went there instead), and the byte count as a second value.
-Enforces MAX-SIZE, reports progress and honours cancellation."
-  (let* ((sink (request-sink request))
+Enforces MAX-SIZE, reports progress and honours cancellation.  Each chunk goes
+to the request's ON-DATA; when it has ON-LINES and PARSE-AS (a MIME type,
+or (MIME-TYPE . :GOPHER-TEXT) for a Gopher text item) names a text type,
+complete lines are parsed and delivered as they arrive."
+  (let* ((streamer (make-body-streamer request url parse-as))
+         (sink (request-sink request))
          (max (request-max-size request))
          (progress (request-on-progress request))
          (out (unless sink
@@ -339,6 +467,7 @@ Enforces MAX-SIZE, reports progress and honours cancellation."
                      (setf out (adjust-array out (max (* 2 (array-dimension out 0)) (+ start end)))))
                    (setf (fill-pointer out) (+ start end))
                    (replace out octets :start1 start :end2 end)))
+             (when streamer (stream-body-chunk streamer octets end))
              (when progress (funcall progress count total))))
       (when (and initial (plusp (length initial)))
         (emit initial (length initial)))
@@ -352,5 +481,6 @@ Enforces MAX-SIZE, reports progress and honours cancellation."
           (emit buffer n)))
       ;; CANCEL-REQUEST shuts the socket down, which reads as a clean EOF.
       (check-cancelled request url)
+      (when streamer (finish-body-streamer streamer))
       (when sink (finish-output sink))
       (values (and out (coerce out '(simple-array (unsigned-byte 8) (*)))) count))))

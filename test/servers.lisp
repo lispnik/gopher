@@ -46,6 +46,20 @@
   (format nil "~{~A~C~C~}" (loop for l in lines append (list l #\Return #\Newline))))
 
 (defvar *client-cert-context* nil)
+(defvar *any-client-cert-context* nil)
+
+(cffi:defcallback accept-any-certificate :int ((ok :int) (ctx :pointer))
+  (declare (ignore ok ctx))
+  1)
+
+(defun any-client-cert-context ()
+  ;; Asks for a client certificate and accepts whatever is presented.
+  (or *any-client-cert-context*
+      (setf *any-client-cert-context*
+            (let ((ctx (cl+ssl:make-context :verify-mode cl+ssl:+ssl-verify-peer+)))
+              (cffi:foreign-funcall "SSL_CTX_set_verify" :pointer ctx :int cl+ssl:+ssl-verify-peer+
+                                    :pointer (cffi:callback accept-any-certificate) :void)
+              ctx))))
 
 (defun client-cert-context ()
   ;; A context that asks for (but does not demand) a client certificate and
@@ -65,9 +79,10 @@
                          (flet ((make () (cl+ssl:make-ssl-server-stream
                                           raw :certificate (namestring certificate)
                                               :key (namestring key))))
-                           (if request-client-cert
-                               (cl+ssl:with-global-context ((client-cert-context)) (make))
-                               (make)))
+                           (case request-client-cert
+                             ((nil) (make))
+                             (:any (cl+ssl:with-global-context ((any-client-cert-context)) (make)))
+                             (t (cl+ssl:with-global-context ((client-cert-context)) (make)))))
                          raw))
                (setf result (funcall handler stream))
                (ignore-errors (force-output stream)))
@@ -225,3 +240,52 @@
   `(let ((,var (start-guppy-server (make-guppy-options ,@option-keys))))
      (unwind-protect (progn ,@body)
        (stop-server ,var))))
+
+;;; SOCKS5: a proxy fixture that relays to the requested host:port.
+
+(defun relay (from to)
+  (let ((buf (make-array 4096 :element-type '(unsigned-byte 8))))
+    (handler-case
+        (loop for n = (gopher::read-chunk from buf (length buf))
+              while (plusp n)
+              do (write-sequence buf to :end n) (force-output to))
+      (error () nil))))
+
+(defun socks-fixture (&key user password)
+  "A handler that speaks SOCKS5, notes the requested target, and relays."
+  (lambda (stream)
+   (block nil
+    (flet ((in (n) (read-n-octets stream n))
+           (out (&rest bytes) (write-sequence (coerce bytes '(vector (unsigned-byte 8))) stream)
+             (force-output stream)))
+      (let* ((head (in 2)) (methods (coerce (in (aref head 1)) 'list)))
+        (cond ((and user (member 2 methods))
+               (out 5 2)
+               (in 1)
+               (let* ((u (babel:octets-to-string (in (aref (in 1) 0))))
+                      (p (babel:octets-to-string (in (aref (in 1) 0)))))
+                 (note *server* (list :auth u p))
+                 (if (and (string= u user) (string= p password))
+                     (out 1 0)
+                     (progn (out 1 1) (return-from nil)))))
+              ((member 0 methods) (out 5 0))
+              (t (out 5 255) (return-from nil))))
+      (let* ((req (in 4))
+             (host (ecase (aref req 3)
+                     (3 (babel:octets-to-string (in (aref (in 1) 0))))
+                     (1 (format nil "~{~D~^.~}" (coerce (in 4) 'list)))))
+             (portb (in 2))
+             (port (+ (* 256 (aref portb 0)) (aref portb 1))))
+        (note *server* (list :connect host port))
+        (if (string= host "refuse.invalid")
+            (out 5 5 0 1 0 0 0 0 0 0)
+            (let* ((target (usocket:socket-connect host port :element-type '(unsigned-byte 8)))
+                   (ts (usocket:socket-stream target)))
+              (out 5 0 0 1 127 0 0 1 0 0)
+              ;; When the target closes, close the client side too, which
+              ;; also ends the relay in the other direction.
+              (let ((back (bt:make-thread (lambda () (relay ts stream) (ignore-errors (close stream))))))
+                (relay stream ts)
+                (ignore-errors (usocket:socket-shutdown target :output))
+                (bt:join-thread back)
+                (usocket:socket-close target)))))))))

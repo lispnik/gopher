@@ -53,6 +53,12 @@
    #:make-gopher-url
    #:url-titan-parameters
    #:make-titan-url
+   #:url-display-host
+   #:url-display-string
+   #:host-to-ascii
+   #:host-to-unicode
+   #:punycode-encode
+   #:punycode-decode
    ;; encoding
    #:decode-text
    #:parse-mime-type
@@ -71,6 +77,9 @@
    #:certificate-common-names
    #:certificate-dns-names
    #:certificate-expired-p
+   #:certificate-info-from-file
+   #:make-identity
+   #:*default-proxy*
    ;; tofu
    #:known-hosts
    #:memory-known-hosts
@@ -136,11 +145,19 @@
    #:parse-gemtext
    #:parse-plain-text
    #:parse-gopher-menu
+   #:parse-nex-directory
+   #:line-parser
+   #:make-line-parser
+   #:parser-feed
+   #:parser-finish
+   #:parse-text-with
    ;; gopher
    #:gopher-item-kind
    #:gopher-item-description
    #:gopher-item-mime-type
    #:gopher-unstuff-text
+   #:gopher-tls-status
+   #:forget-gopher-tls-status
    ;; gopher+
    #:gopher-plus-record
    #:gopher-plus-record-p
@@ -157,6 +174,14 @@
    #:gopher-plus-view-size
    #:parse-gopher-plus-attributes
    #:gopher-attributes
+   #:gopher-plus-server-p
+   #:gopher-plus-question
+   #:gopher-plus-question-p
+   #:gopher-plus-question-kind
+   #:gopher-plus-question-prompt
+   #:gopher-plus-question-choices
+   #:gopher-plus-record-questions
+   #:gopher-plus-submit
    ;; gemini
    #:gemini-status-keyword
    ;; registry / client
@@ -169,6 +194,23 @@
    #:*default-timeout*
    #:*default-max-size*
    #:*default-max-redirects*
+   ;; cache and history
+   #:response-cache
+   #:make-response-cache
+   #:cache-lookup
+   #:cache-store
+   #:cache-forget
+   #:cache-clear
+   #:cache-count
+   #:history
+   #:make-history
+   #:history-visit
+   #:history-current
+   #:history-back
+   #:history-forward
+   #:history-back-p
+   #:history-forward-p
+   #:history-list
    ;; render
    #:render-document
    #:render-response))

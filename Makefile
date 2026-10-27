@@ -4,6 +4,7 @@
 #   make test    load the test system and run the FiveAM suite (default)
 #   make build   build the bin/gopher executable
 #   make deps    restore ocicl-vendored dependencies
+#   make docs    regenerate docs/API.md from the docstrings
 #   make certs   regenerate the self-signed certificates the TLS fixtures use
 #   make clean   remove compiled fasls, including the ASDF cache for this tree
 #
@@ -13,7 +14,7 @@ LISP ?= sbcl
 BIN  := bin/gopher
 FIX  := test/fixtures
 
-.PHONY: all test build deps certs clean
+.PHONY: all test build deps docs certs clean
 
 all: test
 
@@ -29,6 +30,9 @@ build:
 
 deps:
 	ocicl install
+
+docs:
+	$(LISP) --non-interactive --load docs/generate.lisp
 
 # Two unrelated self-signed certificates: the TOFU tests serve one, then the
 # other, from the same host:port to provoke a fingerprint mismatch.

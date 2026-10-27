@@ -29,6 +29,8 @@
 (define-scheme-handler "guppy" (url request)
   (let* ((url (if (request-query request) (url-with-query url (request-query request)) url))
          (line (url-string url :fragment nil)))
+    (when (request-proxy request)
+      (error 'connection-error :url url :message "Guppy uses UDP and cannot go through a SOCKS proxy"))
     (check-request-length line url 2046)
     (let ((socket (usocket:socket-connect (url-host url) (url-effective-port url)
                                           :protocol :datagram
@@ -42,7 +44,8 @@
          (first-seq nil) (eof-seq nil) (mime nil)
          (last-ack nil)
          (received 0)
-         (timeout (or (request-timeout request) *default-timeout*))
+         (streamer nil) (next-to-stream nil)
+         (timeout (or (request-read-timeout* request) *default-timeout*))
          (last-heard (get-internal-real-time))
          (last-sent (get-internal-real-time)))
     (flet ((elapsed (since) (/ (- (get-internal-real-time) since) internal-time-units-per-second))
@@ -79,8 +82,11 @@
                     ((< number 6)
                      (error 'protocol-error :url url :message (format nil "Bad sequence number ~D" number)))
                     (t
-                     (when space            ; success packet: SEQ MIME
-                       (setf first-seq number mime (trim-ws rest)))
+                     (when (and space (null first-seq))   ; success packet: SEQ MIME
+                       (setf first-seq number mime (trim-ws rest)
+                             next-to-stream number
+                             streamer (make-body-streamer
+                                       request url (if (string= mime "") "text/gemini" mime))))
                      (unless (gethash number chunks)
                        (let ((data (subseq buffer data-start length)))
                          (if (and (zerop (length data)) (not space))
@@ -95,9 +101,16 @@
                                (setf (gethash number chunks) data)
                                (alexandria:when-let ((p (request-on-progress request)))
                                  (funcall p received nil))))))
+                     ;; Stream whatever is now contiguous from the start.
+                     (when streamer
+                       (loop for chunk = (gethash next-to-stream chunks)
+                             while (and chunk (not (eql next-to-stream eof-seq)))
+                             do (stream-body-chunk streamer chunk (length chunk))
+                                (incf next-to-stream)))
                      (guppy-send socket (format nil "~D" number))
                      (setf last-ack number
                            last-sent (get-internal-real-time)))))))))
+      (when streamer (finish-body-streamer streamer))
       (let ((body (let ((out (make-array received :element-type '(unsigned-byte 8))) (pos 0))
                     (loop for s from first-seq below eof-seq
                           for chunk = (gethash s chunks)

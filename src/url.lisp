@@ -37,7 +37,8 @@
   "Make a URL.  SCHEME and HOST are lowercased.  PATH, QUERY and FRAGMENT must
 already be percent-encoded."
   (%make-url :scheme (string-downcase scheme) :userinfo userinfo
-             :host (string-downcase host) :port port :path path
+             :host (if (find #\: host) (string-downcase host) (host-to-ascii host))
+             :port port :path path
              :query query :fragment fragment))
 
 (defmethod print-object ((u url) stream)
@@ -146,7 +147,7 @@ AUTHORITY is \"\" for `scheme:///path'.  PATH is always a string."
           (setf host (if colon (subseq hostport 0 colon) hostport)
                 port-string (when colon (subseq hostport (1+ colon))))))
     (values userinfo
-            (string-downcase host)
+            (if (find #\: host) (string-downcase host) (host-to-ascii (percent-decode host)))
             (cond ((or (null port-string) (string= port-string "")) nil)
                   ((every #'digit-char-p port-string)
                    (let ((p (parse-integer port-string)))
@@ -198,6 +199,22 @@ NIL, the fragment is left out too, as it must be in a request."
     (write-string (url-path url) s)
     (when (url-query url) (format s "?~A" (url-query url)))
     (when (and fragment (url-fragment url)) (format s "#~A" (url-fragment url)))))
+
+(defun url-display-host (url)
+  "URL's host for showing to a person: xn-- labels decoded to Unicode."
+  (host-to-unicode (url-host url)))
+
+(defun url-display-string (url)
+  "URL as a string for an address bar: the host in Unicode, and the path and
+query percent-decoded where that yields readable text."
+  (let ((copy (copy-url url)))
+    (setf (url-host copy) (url-display-host url))
+    (let ((s (url-string copy)))
+      (handler-case (let ((d (percent-decode s)))
+                      ;; Keep escapes that would change the meaning.
+                      (if (find-if (lambda (c) (or (char< c #\Space) (member c '(#\Tab #\Newline)))) d)
+                          s d))
+        (error () s)))))
 
 (defun url-with-query (url query)
   "A copy of URL whose query is QUERY.  QUERY is percent-encoded here."

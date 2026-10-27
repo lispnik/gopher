@@ -33,6 +33,16 @@
   (list
    (clingon:make-option :integer :long-name "timeout" :key :timeout :initial-value 30
                                  :description "seconds to wait to connect and for each read")
+   (clingon:make-option :integer :long-name "connect-timeout" :key :connect-timeout
+                                 :description "seconds to wait to connect (default --timeout)")
+   (clingon:make-option :integer :long-name "read-timeout" :key :read-timeout
+                                 :description "seconds to wait for each read (default --timeout)")
+   (clingon:make-option :integer :long-name "deadline" :key :deadline
+                                 :description "seconds for the whole request, redirects included")
+   (clingon:make-option :string :long-name "proxy" :key :proxy :env-vars '("GOPHER_PROXY")
+                                :description "SOCKS5 proxy, e.g. socks5://127.0.0.1:9050 for Tor")
+   (clingon:make-option :string :short-name #\i :long-name "identity" :key :identity
+                                :description "use a client certificate made with `gopher identity create'")
    (clingon:make-option :enum :long-name "tls" :key :tls
                               :items '(("never" . :never) ("try" . :try) ("require" . :require))
                               :description "TLS for gopher:// URLs: never, try or require")
@@ -54,15 +64,35 @@
    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose
                               :description "print status, MIME type and certificate on stderr")))
 
+(defun identity-directory ()
+  (uiop:xdg-config-home "gopher" "identities/"))
+
+(defun identity-files (name)
+  (values (merge-pathnames (make-pathname :name name :type "crt") (identity-directory))
+          (merge-pathnames (make-pathname :name name :type "key") (identity-directory))))
+
+(defun client-certificate-arguments (cmd)
+  (alexandria:if-let ((name (clingon:getopt cmd :identity)))
+    (multiple-value-bind (cert key) (identity-files name)
+      (unless (probe-file cert)
+        (format *error-output* "~&gopher: no identity named ~S (see `gopher identity list')~%" name)
+        (finish 64))
+      (list :client-certificate cert :client-key key))
+    (list :client-certificate (clingon:getopt cmd :client-cert)
+          :client-key (clingon:getopt cmd :client-key))))
+
 (defun fetch-arguments (cmd)
-  (list :timeout (clingon:getopt cmd :timeout)
+  (list* :timeout (clingon:getopt cmd :timeout)
+        :connect-timeout (clingon:getopt cmd :connect-timeout)
+        :read-timeout (clingon:getopt cmd :read-timeout)
+        :deadline (clingon:getopt cmd :deadline)
+        :proxy (clingon:getopt cmd :proxy)
         :tls (clingon:getopt cmd :tls)
         :verify (if (clingon:getopt cmd :insecure) :none :tofu)
         :known-hosts (known-hosts-store cmd)
-        :client-certificate (clingon:getopt cmd :client-cert)
-        :client-key (clingon:getopt cmd :client-key)
         :max-redirects (clingon:getopt cmd :max-redirects)
-        :max-size (clingon:getopt cmd :max-size)))
+        :max-size (clingon:getopt cmd :max-size)
+        (client-certificate-arguments cmd)))
 
 (defun single-url (cmd)
   (let ((args (clingon:command-arguments cmd)))
@@ -137,10 +167,12 @@
                (gopher:response-status-code response) (gopher:response-meta response))))
   3)
 
-(defun print-response (response cmd)
-  "Render, print raw, or save RESPONSE.  Returns the exit status."
+(defun print-response (response cmd &key streamed)
+  "Render, print raw, or save RESPONSE.  Returns the exit status.  STREAMED
+means the document was already drawn as it arrived."
   (when (clingon:getopt cmd :verbose) (describe-response response))
   (cond
+    ((and streamed (gopher:response-success-p response) (gopher:response-document response)) 0)
     ((not (gopher:response-success-p response)) (report-status response))
     ((clingon:getopt cmd :output)
      (gopher:save-response response (clingon:getopt cmd :output))
@@ -160,11 +192,22 @@
 (defun get-handler (cmd)
   (finish
    (reporting-errors (cmd)
-     (let ((response (apply #'gopher:fetch (single-url cmd)
-                            :query (clingon:getopt cmd :query)
-                            :gopher-plus (clingon:getopt cmd :view)
-                            (fetch-arguments cmd))))
-       (print-response response cmd)))))
+     ;; Draw text documents as they arrive, unless saving or printing raw.
+     (let* ((stream-p (not (or (clingon:getopt cmd :output) (clingon:getopt cmd :raw))))
+            (links (gopher::make-link-vector))
+            (streamed nil)
+            (show-urls (not (clingon:getopt cmd :no-urls)))
+            (response (apply #'gopher:fetch (single-url cmd)
+                             :query (clingon:getopt cmd :query)
+                             :gopher-plus (clingon:getopt cmd :view)
+                             :on-lines (and stream-p
+                                            (lambda (lines)
+                                              (setf streamed t)
+                                              (dolist (l lines)
+                                                (gopher::render-line l links :show-urls show-urls))
+                                              (finish-output)))
+                             (fetch-arguments cmd))))
+       (print-response response cmd :streamed streamed)))))
 
 (defun get-command ()
   (clingon:make-command
@@ -258,6 +301,59 @@
              (network-options))
    :handler #'upload-handler))
 
+;;; identity
+
+(defun identity-create-handler (cmd)
+  (let ((name (first (clingon:command-arguments cmd))))
+    (unless name
+      (format *error-output* "~&gopher: identity create needs a NAME~%")
+      (finish 64))
+    (multiple-value-bind (cert key) (identity-files name)
+      (when (and (probe-file cert) (not (clingon:getopt cmd :force)))
+        (format *error-output* "~&gopher: identity ~S exists (use --force to replace it)~%" name)
+        (finish 1))
+      (let ((info (gopher:make-identity cert key
+                                        :common-name (or (clingon:getopt cmd :common-name) name)
+                                        :days (clingon:getopt cmd :days)
+                                        :key-type (clingon:getopt cmd :key-type))))
+        (format t "Created identity ~A~%  certificate: ~A~%  key: ~A~%  fingerprint: ~A~%"
+                name (namestring cert) (namestring key) (gopher:certificate-fingerprint info))
+        (finish 0)))))
+
+(defun identity-list-handler (cmd)
+  (declare (ignore cmd))
+  (dolist (cert (directory (merge-pathnames "*.crt" (identity-directory))))
+    (let ((info (ignore-errors (gopher:certificate-info-from-file cert))))
+      (format t "~A~@[  ~A~]~@[  expires ~A~]~%" (pathname-name cert)
+              (and info (gopher:certificate-fingerprint info))
+              (and info (gopher:certificate-not-after info)
+                   (multiple-value-bind (s m h d mo y) (decode-universal-time (gopher:certificate-not-after info) 0)
+                     (declare (ignore s m h))
+                     (format nil "~D-~2,'0D-~2,'0D" y mo d))))))
+  (finish 0))
+
+(defun identity-command ()
+  (clingon:make-command
+   :name "identity"
+   :description "make and list Gemini client certificates"
+   :sub-commands
+   (list (clingon:make-command
+          :name "create" :usage "[options] NAME"
+          :description "create a client certificate and key in ~/.config/gopher/identities"
+          :options (list (clingon:make-option :integer :long-name "days" :key :days :initial-value 3650
+                                                       :description "validity in days")
+                         (clingon:make-option :enum :long-name "key-type" :key :key-type :initial-value "ec"
+                                                    :items '(("ec" . :ec) ("rsa" . :rsa) ("ed25519" . :ed25519))
+                                                    :description "ec (P-256), rsa or ed25519")
+                         (clingon:make-option :string :long-name "common-name" :key :common-name
+                                                      :description "certificate CN (default: NAME)")
+                         (clingon:make-option :flag :long-name "force" :key :force
+                                                    :description "replace an existing identity"))
+          :handler #'identity-create-handler)
+         (clingon:make-command :name "list" :description "list identities"
+                               :handler #'identity-list-handler))
+   :handler (lambda (cmd) (clingon:print-usage cmd t))))
+
 ;;; known-hosts
 
 (defun known-hosts-handler (cmd)
@@ -297,7 +393,8 @@
    :description "a client for Gopher, Gemini, Spartan, Nex, Guppy, Finger and Titan"
    :authors '("Matthew Kennedy <burnsidemk@gmail.com>")
    :license "MIT"
-   :sub-commands (list (get-command) (info-command) (upload-command) (known-hosts-command))
+   :sub-commands (list (get-command) (info-command) (upload-command) (identity-command)
+                       (known-hosts-command))
    :handler (lambda (cmd) (clingon:print-usage cmd t))))
 
 (defun main ()

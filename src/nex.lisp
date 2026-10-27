@@ -18,23 +18,12 @@
          "text/plain")
         (t (guess-mime-type path))))
 
-(defun parse-nex-directory (text &optional base-url)
-  "A Nex directory listing as a DOCUMENT: `=> ' lines are links, the rest text."
-  (make-document
-   :kind :nex-directory
-   :lines (coerce (loop for l in (let ((ls (split-lines text)))
-                                   (if (and ls (string= (car (last ls)) "")) (butlast ls) ls))
-                        collect (if (alexandria:starts-with-subseq "=>" l)
-                                    (parse-link-line (subseq l 2) base-url :link)
-                                    (make-document-line :kind :text :text l)))
-                  'vector)))
-
 (define-scheme-handler "nex" (url request)
   (let* ((path (percent-decode (url-path url)))
          (selector (string-left-trim "/" path))
          (mime (nex-mime-type path)))
     (with-connection (conn request url (url-host url) (url-effective-port url))
       (send-line conn selector)
-      (multiple-value-bind (body count) (read-body (connection-stream conn) request url)
+      (multiple-value-bind (body count) (read-body (connection-stream conn) request url :parse-as mime)
         (make-response url :nex :success :meta mime :mime-type mime
                                          :body body :bytes-read count)))))

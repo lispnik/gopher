@@ -103,16 +103,6 @@ consulted when the type itself does not say (I, s, ;, d, 9, ...)."
       "gophers"
       "gopher"))
 
-(defun parse-gopher-menu (text &optional base-url)
-  "Parse a Gopher menu into a DOCUMENT of kind :MENU.  Tolerates a missing
-`.' terminator, bare LF line ends, and lines that are not menu lines."
-  (let ((lines '()))
-    (dolist (l (split-lines text))
-      (when (string= l ".") (return))
-      (push (parse-gopher-menu-line l base-url) lines))
-    (loop while (and lines (eq (line-kind (first lines)) :text) (string= (line-text (first lines)) ""))
-          do (pop lines))
-    (make-document :kind :menu :lines (coerce (nreverse lines) 'vector))))
 
 ;;; Text items: the `.' terminator line and dot-stuffing
 
@@ -185,6 +175,21 @@ links -- the error text, else NIL."
                  (setf (gethash key *gopher-tls-hosts*) nil))
                (open-connection request url host port))))))))
 
+;;; What has been learned about servers
+
+(defun gopher-tls-status (host &optional (port 70))
+  "What :TLS :TRY found at HOST:PORT: :TLS, :PLAIN, or NIL if never tried."
+  (bt:with-lock-held (*gopher-tls-lock*)
+    (multiple-value-bind (value found) (gethash (host-key (host-to-ascii host) port) *gopher-tls-hosts*)
+      (and found (if value :tls :plain)))))
+
+(defun forget-gopher-tls-status (&optional host (port 70))
+  "Forget what :TLS :TRY learned about HOST:PORT, or about every server."
+  (bt:with-lock-held (*gopher-tls-lock*)
+    (if host
+        (remhash (host-key (host-to-ascii host) port) *gopher-tls-hosts*)
+        (clrhash *gopher-tls-hosts*))))
+
 ;;; The handler
 
 (defun build-gopher-request (selector search plus)
@@ -205,7 +210,8 @@ links -- the error text, else NIL."
          (kind (gopher-item-kind type))
          (selector (url-gopher-selector url))
          (search (or (request-query request) (url-gopher-search url)))
-         (plus (gopher-plus-suffix request url))
+         (answers (request-gopher-plus-answers request))
+         (plus (or (gopher-plus-suffix request url) (and answers "+")))
          (host (url-host url))
          (port (url-effective-port url)))
     (cond
@@ -223,7 +229,9 @@ links -- the error text, else NIL."
        (let ((conn (open-gopher-connection request url host port)))
          (unwind-protect
               (progn
-                (send-line conn (build-gopher-request selector (and (eq kind :search) search) plus))
+                (if answers
+                    (send-gopher-plus-answers conn selector plus answers)
+                    (send-line conn (build-gopher-request selector (and (eq kind :search) search) plus)))
                 (if plus
                     (read-gopher-plus-response conn request url type selector plus)
                     (read-gopher-response conn request url type selector)))
@@ -235,8 +243,9 @@ links -- the error text, else NIL."
 (defun read-gopher-response (conn request url type selector)
   (let* ((kind (gopher-item-kind type))
          (textual (member kind '(:menu :text :search :mirror :cso)))
-         (body (read-body (connection-stream conn) request url))
-         (mime (gopher-response-mime-type type selector)))
+         (mime (gopher-response-mime-type type selector))
+         (body (read-body (connection-stream conn) request url
+                          :parse-as (if (eq kind :text) (cons mime :gopher-text) mime))))
     (when (and body textual (not (eq kind :menu)) (not (eq kind :search)) (not (eq kind :mirror)))
       (setf body (gopher-unstuff-text body)))
     (let ((response (make-response url :gopher :success :mime-type mime :meta mime

@@ -32,14 +32,15 @@
         (return-from read-gopher-plus-response
           (gopher-plain-fallback conn url type selector header rest))))
     (multiple-value-bind (ok n) (parse-gopher-plus-length header url)
-      (let* ((body (if (plusp n)
-                       (read-body stream request url :total n)
-                       (read-body stream request url)))
-             (body (if (and body (= n -1)) (gopher-unstuff-text body) body))
-             (view (and (> (length plus) 1) (char= (char plus 0) #\+) (subseq plus 1)))
+      (let* ((view (and (> (length plus) 1) (char= (char plus 0) #\+) (subseq plus 1)))
              (mime (cond ((member plus '("!" "$") :test #'string=) "text/x-gopher-plus-attributes")
                          (view (first (split-string (trim-ws view) #\Space)))
-                         (t (gopher-response-mime-type type selector)))))
+                         (t (gopher-response-mime-type type selector))))
+             (parse-as (and ok (if (= n -1) (cons mime :gopher-text) mime)))
+             (body (if (plusp n)
+                       (read-body stream request url :total n :parse-as parse-as)
+                       (read-body stream request url :parse-as parse-as)))
+             (body (if (and body (= n -1)) (gopher-unstuff-text body) body)))
         (if ok
             (make-response url :gopher :success :mime-type mime :meta mime :body body
                                                 :connection conn)
@@ -142,3 +143,55 @@ the RESPONSE as a second value."
                 (parse-gopher-plus-attributes (or (response-text response) "") url)
                 '())
             response)))
+
+;;; Servers and forms
+
+(defun gopher-plus-server-p (url &rest fetch-options)
+  "True if the server at URL answers a Gopher+ attribute request for the
+item URL names (the root menu if URL has no path)."
+  (handler-case
+      (multiple-value-bind (records response) (apply #'gopher-attributes url fetch-options)
+        (and (response-success-p response) records t))
+    ((or small-web-error stream-error) () nil)))
+
+(defstruct gopher-plus-question
+  (kind :ask :type keyword)  ; :ask :ask-password :ask-long :ask-file :select :choose :choose-file :note
+  (prompt "" :type string)
+  (choices '()))             ; default answer for :ASK, the options for :SELECT/:CHOOSE
+
+(defparameter *ask-kinds*
+  '(("Ask" . :ask) ("AskP" . :ask-password) ("AskL" . :ask-long) ("AskF" . :ask-file)
+    ("Select" . :select) ("Choose" . :choose) ("ChooseF" . :choose-file) ("Note" . :note)))
+
+(defun gopher-plus-record-questions (record)
+  "The +ASK block of RECORD as GOPHER-PLUS-QUESTIONs, in order."
+  (loop for line in (gopher-plus-record-attribute record "ASK")
+        for colon = (position #\: line)
+        for kind = (and colon (cdr (assoc (trim-ws (subseq line 0 colon)) *ask-kinds* :test #'string-equal)))
+        when kind
+          collect (let ((fields (split-string (string-left-trim " " (subseq line (1+ colon))) #\Tab)))
+                    (make-gopher-plus-question :kind kind :prompt (first fields)
+                                               :choices (rest fields)))))
+
+(defun send-gopher-plus-answers (conn selector plus answers)
+  "Send a Gopher+ form submission: `selector TAB + TAB 1', then a data block
+with one answer per line.  An answer that is a list of strings (an AskL
+question) is sent as its line count followed by the lines."
+  (let ((stream (connection-stream conn)))
+    (flet ((line (s)
+             (write-octets stream s)
+             (write-octets stream #.(coerce #(13 10) '(vector (unsigned-byte 8))))))
+      (line (format nil "~A~C~A~C1" selector #\Tab plus #\Tab))
+      (line "+-1")
+      (dolist (a answers)
+        (if (listp a)
+            (progn (line (princ-to-string (length a))) (mapc #'line a))
+            (line a)))
+      (line ".")
+      (force-output stream))))
+
+(defun gopher-plus-submit (url answers &rest fetch-options)
+  "Answer the +ASK form of the item at URL.  ANSWERS has one entry per
+question (a string, or a list of strings for an AskL question).  Returns the
+server's RESPONSE."
+  (apply #'fetch url :gopher-plus-answers answers fetch-options))
