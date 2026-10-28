@@ -63,6 +63,8 @@
     (line-item-type "Gopher item type character, for lines from a menu.")
     (line-item-kind "Gopher item classification keyword, see GOPHER-ITEM-KIND.")
     (line-gopher-plus-p "True if the menu marked the item as Gopher+.")
+    (line-gopher-plus-ask-p "True if the menu marked the item with `?': a Gopher+ item
+with a +ASK form to answer before fetching it (see GOPHER-PLUS-SUBMIT).")
     (line-host "Gopher items: the host field of the menu line.")
     (line-port "Gopher items: the port field of the menu line.")
     (line-selector "Gopher items: the selector field of the menu line.")

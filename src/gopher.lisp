@@ -79,6 +79,7 @@ consulted when the type itself does not say (I, s, ;, d, 9, ...)."
                (make-document-line :kind line-kind :text display :url url
                                    :item-type type :item-kind kind
                                    :gopher-plus-p (and plus-p t)
+                                   :gopher-plus-ask-p (eql plus-p #\?)
                                    :host host :port port :selector selector)))
         (case kind
           (:info (item :text))
@@ -226,16 +227,39 @@ links -- the error text, else NIL."
       ((and (eq kind :search) (null search) (null plus))
        (make-response url :gopher :input :meta "Search"))
       (t
-       (let ((conn (open-gopher-connection request url host port)))
-         (unwind-protect
-              (progn
-                (if answers
-                    (send-gopher-plus-answers conn selector plus answers)
-                    (send-line conn (build-gopher-request selector (and (eq kind :search) search) plus)))
-                (if plus
-                    (read-gopher-plus-response conn request url type selector plus)
-                    (read-gopher-response conn request url type selector)))
-           (close-connection request conn)))))))
+       (flet ((exchange ()
+                (let ((conn (open-gopher-connection request url host port)))
+                  (unwind-protect
+                       (progn
+                         (if answers
+                             (send-gopher-plus-answers conn selector plus answers
+                                                        (request-gopher-plus-file request))
+                             (send-line conn (build-gopher-request selector (and (eq kind :search) search) plus)))
+                         (if plus
+                             (read-gopher-plus-response conn request url type selector plus)
+                             (read-gopher-response conn request url type selector)))
+                    (close-connection request conn)))))
+         ;; Some servers complete a TLS handshake on the Gopher port and then
+         ;; hang up without a byte (a TLS front end for something else).  Under
+         ;; :TRY that is not a server that speaks Gopher over TLS: remember it
+         ;; as plain and ask again.  The hang-up shows as an empty body, or --
+         ;; when a Gopher+ reply's header line was expected -- as a TLS error.
+         (if (eq (gopher-tls-mode url request) :try)
+             (flet ((plain-again ()
+                      (bt:with-lock-held (*gopher-tls-lock*)
+                        (setf (gethash (host-key host port) *gopher-tls-hosts*) nil))
+                      (exchange)))
+               (let ((response (handler-case (exchange)
+                                 ((or tls-error cl+ssl::ssl-error empty-response) (e)
+                                   (if (eq (gopher-tls-status host port) :tls)
+                                       :silent
+                                       (error e))))))
+                 (cond ((eq response :silent) (plain-again))
+                       ((and (response-certificate response)
+                             (zerop (response-bytes-read response)))
+                        (plain-again))
+                       (t response))))
+             (exchange)))))))
 
 (defun gopher-response-mime-type (type selector)
   (or (gopher-item-mime-type type selector) "application/octet-stream"))
@@ -244,12 +268,18 @@ links -- the error text, else NIL."
   (let* ((kind (gopher-item-kind type))
          (textual (member kind '(:menu :text :search :mirror :cso)))
          (mime (gopher-response-mime-type type selector))
-         (body (read-body (connection-stream conn) request url
-                          :parse-as (if (eq kind :text) (cons mime :gopher-text) mime))))
+         (body nil)
+         (count 0))
+    ;; COUNT is what came over the wire.  With a :SINK the body is NIL, and
+    ;; the count is the only record of how much was written there.
+    (setf (values body count)
+          (read-body (connection-stream conn) request url
+                     :parse-as (if (eq kind :text) (cons mime :gopher-text) mime)))
     (when (and body textual (not (eq kind :menu)) (not (eq kind :search)) (not (eq kind :mirror)))
       (setf body (gopher-unstuff-text body)))
     (let ((response (make-response url :gopher :success :mime-type mime :meta mime
-                                                        :body body :connection conn)))
+                                                        :body body :bytes-read count
+                                                        :connection conn)))
       ;; Servers answer a bad selector with an error menu, for any item type.
       (when (and body (or (member kind '(:menu :search :mirror))
                           (and textual (looks-like-gopher-error-p body))))

@@ -66,3 +66,15 @@
          (links (render-document doc :stream out)))
     (is (equalp #("gemini://a/" "gemini://b/") links))
     (is (search "[2] B <gemini://b/>" (get-output-stream-string out)))))
+
+(test the-client-context-offers-the-usual-signature-algorithms
+  ;; OpenSSL 4.1's own list made tlgs.one refuse the handshake (decode_error).
+  ;; A list OpenSSL refuses only warns, so a warning here means it was refused.
+  (gopher::forget-client-context)
+  (let ((warned nil))
+    (handler-bind ((warning (lambda (w) (setf warned w) (muffle-warning w))))
+      (is (not (cffi:null-pointer-p (gopher::client-context)))))
+    (is (null warned)))
+  (is (eq (gopher::client-context) (gopher::client-context)) "made once")
+  (is (member 'gopher::forget-client-context sb-ext:*save-hooks*)
+      "forgotten before an image is saved"))

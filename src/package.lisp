@@ -12,6 +12,7 @@
    #:timeout-error
    #:tls-error
    #:protocol-error
+   #:empty-response
    #:response-too-large
    #:error-limit
    #:unsupported-scheme
@@ -118,6 +119,7 @@
    #:line-item-type
    #:line-item-kind
    #:line-gopher-plus-p
+   #:line-gopher-plus-ask-p
    #:line-host
    #:line-port
    #:line-selector

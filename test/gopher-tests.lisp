@@ -30,11 +30,18 @@
     (is (eq :menu (line-item-kind (second lines))))
     (is (string= "gopher://example.org:7070/0/about.txt" (line-url (third lines))))
     (is-true (line-gopher-plus-p (third lines)))
+    (is-false (line-gopher-plus-ask-p (third lines)))
     (is (eq :search (line-item-kind (fourth lines))))
     (is (string= "https://example.org/" (line-url (fifth lines))))
     (is (string= "telnet://guest@bbs.example.org" (line-url (sixth lines))))
     (is (string= "this line is not a menu line" (line-text (eighth lines))))
     (is (eq :image (line-item-kind (ninth lines))))))
+
+(test gopher-plus-form-items-are-marked
+  (let ((line (gopher::parse-gopher-menu-line (format nil "0Survey~C/survey~Chost~C70~C?" #\Tab #\Tab #\Tab #\Tab)
+                                      (parse-url "gopher://host/"))))
+    (is-true (line-gopher-plus-p line))
+    (is-true (line-gopher-plus-ask-p line))))
 
 (test parse-menu-tolerates-lf-and-no-terminator
   (let ((doc (parse-gopher-menu (format nil "1A~C/a~Ch~C70~%1B~C/b~Ch~C70~%" #\Tab #\Tab #\Tab #\Tab #\Tab #\Tab))))
@@ -125,6 +132,15 @@
       (is (equalp #(0 1 2 255 46 13 10) (response-body r)))
       (is (null (response-document r))))))
 
+(test fetch-binary-to-a-sink-counts-its-bytes
+  ;; The body goes to the sink, so the count is all that says how much came.
+  (with-server (s #'gopher-fixture)
+    (let* ((sink (flexi-free-octet-sink))
+           (r (fetch (local-url "gopher" s "/9/bin") :sink (car sink))))
+      (is (null (response-body r)))
+      (is (= 7 (response-bytes-read r)))
+      (is (equalp #(0 1 2 255 46 13 10) (funcall (cdr sink)))))))
+
 (test fetch-error-menu-is-not-found
   (with-server (s #'gopher-fixture)
     (let ((r (fetch (local-url "gopher" s "/1/missing"))))
@@ -153,6 +169,56 @@
     (let ((r (fetch (local-url "gopher" s "/0/doc") :tls :try :timeout 5)))
       (is (eq :success (response-status r)))
       (is (null (response-certificate r))))))
+
+(defun start-silent-tls-server ()
+  "A server on one port that answers a TLS handshake and then hangs up without
+a byte, and answers plain Gopher with the fixture: what gopher.quux.org does.
+A connection's first byte tells them apart (22 begins a TLS handshake).
+Returns the listening socket and its thread."
+  (let* ((listen (usocket:socket-listen "127.0.0.1" 0 :reuse-address t
+                                                     :element-type '(unsigned-byte 8)))
+         (thread
+           (bt:make-thread
+            (lambda ()
+              (loop
+                (let ((client (ignore-errors (usocket:socket-accept listen))))
+                  (unless client (return))
+                  (ignore-errors
+                   (let ((first (make-array 1 :element-type '(unsigned-byte 8))))
+                     (sb-bsd-sockets:socket-receive (usocket:socket client) first 1 :peek t)
+                     (if (= 22 (aref first 0))
+                         (close (cl+ssl:make-ssl-server-stream
+                                 (usocket:socket-stream client)
+                                 :certificate (namestring (fixture "server-cert.pem"))
+                                 :key (namestring (fixture "server-key.pem"))))
+                         ;; The fixture notes each request on the server running it.
+                         (let ((*server* (make-fixture-server)))
+                           (gopher-fixture (usocket:socket-stream client))
+                           (force-output (usocket:socket-stream client))))))
+                  (ignore-errors (usocket:socket-close client)))))
+            :name "silent tls server")))
+    (values listen thread)))
+
+(test gopher-tls-try-falls-back-when-tls-is-silent
+  (multiple-value-bind (listen thread) (start-silent-tls-server)
+    (unwind-protect
+         (let* ((port (usocket:get-local-port listen))
+                (r (fetch (format nil "gopher://127.0.0.1:~D/0/doc" port)
+                          :tls :try :timeout 5 :known-hosts (make-memory-known-hosts))))
+           (is (eq :success (response-status r)))
+           (is (plusp (response-bytes-read r)) "the plain answer, not the silent TLS one")
+           (is (null (response-certificate r)))
+           (is (eq :plain (gopher-tls-status "127.0.0.1" port)))
+           ;; A Gopher+ request, whose reply begins with a header line: the
+           ;; silence is an EOF in the middle of TLS, and that falls back too.
+           (forget-gopher-tls-status "127.0.0.1" port)
+           (let ((plus (fetch (format nil "gopher://127.0.0.1:~D/0/doc" port)
+                              :tls :try :gopher-plus "!" :timeout 5
+                              :known-hosts (make-memory-known-hosts))))
+             (is (null (response-certificate plus)))
+             (is (eq :plain (gopher-tls-status "127.0.0.1" port)))))
+      (usocket:socket-close listen)
+      (ignore-errors (bt:join-thread thread)))))
 
 (test gopher-tls-try-uses-tls-when-offered
   (with-server (s #'gopher-fixture :tls t)

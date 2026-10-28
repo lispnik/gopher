@@ -32,7 +32,7 @@ https://, gopher:// to telnet:// -- is the caller's decision."
                 (max-size *default-max-size*) (proxy *default-proxy*)
                 tls (verify :tofu) known-hosts client-certificate client-key
                 on-progress on-data on-lines handle sink cache
-                query data mime-type token gopher-plus gopher-plus-answers
+                query data mime-type token gopher-plus gopher-plus-answers gopher-plus-file
                 (follow-redirects t) (max-redirects *default-max-redirects*))
   "Fetch URL (a string or URL) and return a RESPONSE.
 
@@ -65,6 +65,8 @@ subclasses).
   :MIME-TYPE, :TOKEN   Titan upload parameters
   :GOPHER-PLUS         T (Gopher+ item), \"!\" / \"$\" (attributes) or a view's MIME type
   :GOPHER-PLUS-ANSWERS answers to a Gopher+ +ASK form, one string per question
+  :GOPHER-PLUS-FILE    a file (pathname or octets) sent after those answers,
+                       for a ChooseF question
   :FOLLOW-REDIRECTS    follow same-scheme redirects (default T)
   :MAX-REDIRECTS       limit on redirects followed (default 5)"
   (declare (ignore options))
@@ -76,6 +78,7 @@ subclasses).
                                 :proxy (ensure-proxy proxy)
                                 :on-data on-data :on-lines on-lines
                                 :gopher-plus-answers gopher-plus-answers
+                                :gopher-plus-file (and gopher-plus-file (upload-octets gopher-plus-file))
                                 :max-size max-size :tls tls :verify verify
                                 :known-hosts known-hosts
                                 :client-certificate client-certificate :client-key client-key

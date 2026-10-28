@@ -22,6 +22,11 @@ and continues; REJECT-CERTIFICATE aborts with this error.
 
 Could not connect, or the connection failed mid-request.
 
+### `empty-response` — condition
+
+The server closed the connection without sending anything,
+where the protocol needs at least a header line.
+
 ### `protocol-error` — condition
 
 The server's reply does not follow the protocol.
@@ -688,6 +693,15 @@ The first level-1 heading of a gemtext document, or NIL.
 
 Alt text of a gemtext preformatted block, or NIL.
 
+### `line-gopher-plus-ask-p` — function
+
+```lisp
+(line-gopher-plus-ask-p instance)
+```
+
+True if the menu marked the item with `?': a Gopher+ item
+with a +ASK form to answer before fetching it (see GOPHER-PLUS-SUBMIT).
+
 ### `line-gopher-plus-p` — function
 
 ```lisp
@@ -775,10 +789,11 @@ For links and prompts, the absolute URL as a string.
                                                                           alt) (item-type
                                                                                 item-type) (item-kind
                                                                                             item-kind) (gopher-plus-p
-                                                                                                        gopher-plus-p) (host
-                                                                                                                        host) (port
-                                                                                                                               port) (selector
-                                                                                                                                      selector))
+                                                                                                        gopher-plus-p) (gopher-plus-ask-p
+                                                                                                                        gopher-plus-ask-p) (host
+                                                                                                                                            host) (port
+                                                                                                                                                   port) (selector
+                                                                                                                                                          selector))
 ```
 
 Make a DOCUMENT-LINE.  Keys: :KIND :TEXT :URL :LEVEL :ALT :ITEM-TYPE :ITEM-KIND :GOPHER-PLUS-P :HOST :PORT :SELECTOR.
@@ -1064,8 +1079,9 @@ item URL names (the root menu if URL has no path).
 ```
 
 Answer the +ASK form of the item at URL.  ANSWERS has one entry per
-question (a string, or a list of strings for an AskL question).  Returns the
-server's RESPONSE.
+question that is not a Note (a string, or a list of strings for an AskL
+question).  A ChooseF question's file goes in FETCH-OPTIONS as
+:GOPHER-PLUS-FILE (a pathname or octets).  Returns the server's RESPONSE.
 
 ### `gopher-plus-view` — structure
 
@@ -1338,7 +1354,7 @@ A size-bounded LRU cache of responses; see MAKE-RESPONSE-CACHE.
 ### `fetch` — function
 
 ```lisp
-(fetch url &rest options &key default-scheme timeout connect-timeout read-timeout deadline max-size proxy tls verify known-hosts client-certificate client-key on-progress on-data on-lines handle sink cache query data mime-type token gopher-plus gopher-plus-answers follow-redirects max-redirects)
+(fetch url &rest options &key default-scheme timeout connect-timeout read-timeout deadline max-size proxy tls verify known-hosts client-certificate client-key on-progress on-data on-lines handle sink cache query data mime-type token gopher-plus gopher-plus-answers gopher-plus-file follow-redirects max-redirects)
 ```
 
 Fetch URL (a string or URL) and return a RESPONSE.
@@ -1372,6 +1388,8 @@ subclasses).
   :MIME-TYPE, :TOKEN   Titan upload parameters
   :GOPHER-PLUS         T (Gopher+ item), "!" / "$" (attributes) or a view's MIME type
   :GOPHER-PLUS-ANSWERS answers to a Gopher+ +ASK form, one string per question
+  :GOPHER-PLUS-FILE    a file (pathname or octets) sent after those answers,
+                       for a ChooseF question
   :FOLLOW-REDIRECTS    follow same-scheme redirects (default T)
   :MAX-REDIRECTS       limit on redirects followed (default 5)
 

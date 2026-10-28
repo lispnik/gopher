@@ -47,6 +47,7 @@ works for Tor (socks5://127.0.0.1:9050) and .onion addresses.")
   (token nil)               ; Titan token
   (gopher-plus nil)         ; Gopher+ request suffix: T, "!", "$", or a view MIME type
   (gopher-plus-answers nil) ; list of strings answering a +ASK form
+  (gopher-plus-file nil)    ; octets sent after the answers (a ChooseF file)
   (follow-redirects t)
   (max-redirects *default-max-redirects*))
 
@@ -317,6 +318,43 @@ whose stream is now a tunnel to the target."
         (unregister-socket request socket)
         (ignore-errors (usocket:socket-close socket))))))
 
+;;; The TLS context.  OpenSSL 4.1 offers by default signature algorithms some
+;;; servers cannot parse: they answer the handshake with a decode_error alert
+;;; (tlgs.one did, while TLS 1.2, or TLS 1.3 offering the usual list, worked).
+;;; So the client offers the usual list.  The context is made when first
+;;; needed and forgotten before an image is saved: a pointer from the build is
+;;; garbage in the saved image.
+
+(defparameter +client-sigalgs+
+  (format nil "~{~A~^:~}"
+          '("ECDSA+SHA256" "ECDSA+SHA384" "ECDSA+SHA512" "ed25519" "ed448"
+            "rsa_pss_pss_sha256" "rsa_pss_pss_sha384" "rsa_pss_pss_sha512"
+            "rsa_pss_rsae_sha256" "rsa_pss_rsae_sha384" "rsa_pss_rsae_sha512"
+            "RSA+SHA256" "RSA+SHA384" "RSA+SHA512"))
+  "The signature algorithms a client handshake offers.")
+
+(defconstant +ssl-ctrl-set-sigalgs-list+ 98)
+
+(defvar *client-context* nil)
+(defvar *client-context-lock* (bt:make-lock "gopher tls context"))
+
+(defun client-context ()
+  "The SSL_CTX every client connection is made in."
+  (bt:with-lock-held (*client-context-lock*)
+    (or *client-context*
+        (let ((context (cl+ssl:make-context :verify-mode cl+ssl:+ssl-verify-none+
+                                            :verify-location nil)))
+          (unless (= 1 (cffi:foreign-funcall "SSL_CTX_ctrl" :pointer context
+                                             :int +ssl-ctrl-set-sigalgs-list+ :long 0
+                                             :string +client-sigalgs+ :long))
+            (warn "OpenSSL refused the signature algorithm list; using its own."))
+          (setf *client-context* context)))))
+
+(defun forget-client-context ()
+  (setf *client-context* nil))
+
+(pushnew 'forget-client-context sb-ext:*save-hooks*)
+
 (defun open-connection (request url host port &key tls)
   "Connect to HOST:PORT, through the request's proxy if it has one.  With TLS
 true, also run the TLS handshake and the TOFU check for that host.  Returns a
@@ -334,15 +372,16 @@ CONNECTION whose stream reads and writes octets."
        (let ((stream (usocket:socket-stream socket)))
         (if (not tls)
             (make-connection :socket socket :stream stream)
-            (let* ((ssl (cl+ssl:make-ssl-client-stream
-                         stream
-                         :unwrap-stream-p nil
-                         :hostname (unless (ip-literal-p host) host)
-                         :verify nil
-                         :certificate (and (request-client-certificate request)
-                                           (namestring (request-client-certificate request)))
-                         :key (and (request-client-key request)
-                                   (namestring (request-client-key request)))))
+            (let* ((ssl (cl+ssl:with-global-context ((client-context))
+                          (cl+ssl:make-ssl-client-stream
+                           stream
+                           :unwrap-stream-p nil
+                           :hostname (unless (ip-literal-p host) host)
+                           :verify nil
+                           :certificate (and (request-client-certificate request)
+                                             (namestring (request-client-certificate request)))
+                           :key (and (request-client-key request)
+                                     (namestring (request-client-key request))))))
                    (x509 (cl+ssl::ssl-stream-x509-certificate ssl))
                    (info (if (or (null x509) (cffi:null-pointer-p x509))
                              (error 'tls-error :url url :message "Server sent no certificate")

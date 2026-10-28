@@ -219,9 +219,16 @@
                               " Note: Thanks!"
                               ".")))
           ((equal (third fields) "1")
-           (let ((answers (loop for l = (read-request-line stream) until (string= l ".") collect l)))
+           (let* ((header (read-request-line stream))
+                  (answers (if (string= header "+-1")
+                               (cons header (loop for l = (read-request-line stream)
+                                                  until (string= l ".") collect l))
+                               ;; +N: N bytes of answers and a file.
+                               (list header (babel:octets-to-string
+                                             (read-n-octets stream (parse-integer header :start 1))
+                                             :encoding :latin-1)))))
              (note *server* answers)
-             (send stream (crlf "+-2") (format nil "~{~A~^|~}" answers))))
+             (send stream (crlf "+-2") (format nil "~{~A~^|~}" (rest answers)))))
           (t (send stream (crlf "plain" "."))))))
 
 (test gopher-plus-ask-forms
@@ -237,6 +244,22 @@
         (is (eq :success (response-status r)))
         (is (string= (format nil "/survey~C+~C1" #\Tab #\Tab) (second (server-log s))))
         (is (equal '("+-1" "Ada" "secret" "green" "2" "line one" "line two") (third (server-log s))))))))
+
+(test gopher-plus-forms-can-send-a-file
+  ;; A ChooseF file is the rest of the data block, and the block is counted,
+  ;; so the file may hold a line of one dot, or bytes that are not text.
+  (with-server (s #'ask-fixture)
+    (let* ((file (coerce (append (map 'list #'char-code (format nil "line~C~C.~C~C" #\Return #\Linefeed #\Return #\Linefeed))
+                                 '(0 255))
+                         '(vector (unsigned-byte 8))))
+           (r (gopher-plus-submit (local-url "gopher" s "/0/survey") (list "Ada" "notes.txt")
+                                  :gopher-plus-file file)))
+      (is (eq :success (response-status r)))
+      (destructuring-bind (header block) (second (server-log s))
+        (is (string= (format nil "+~D" (+ 16 (length file))) header))
+        (is (string= (format nil "Ada~C~Cnotes.txt~C~C~A" #\Return #\Linefeed #\Return #\Linefeed
+                             (map 'string #'code-char file))
+                     block))))))
 
 (test gopher-plus-server-detection
   (with-server (s #'gopher-plus-fixture)

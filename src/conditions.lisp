@@ -35,6 +35,10 @@
 (define-condition protocol-error (small-web-error) ()
   (:documentation "The server's reply does not follow the protocol."))
 
+(define-condition empty-response (protocol-error) ()
+  (:documentation "The server closed the connection without sending anything,
+where the protocol needs at least a header line."))
+
 (define-condition response-too-large (small-web-error)
   ((limit :initarg :limit :reader error-limit))
   (:documentation "The body exceeded the MAX-SIZE given to FETCH."))

@@ -24,7 +24,7 @@
 (defun read-gopher-plus-response (conn request url type selector plus)
   (let* ((stream (connection-stream conn))
          (header (or (read-header-line stream :url url)
-                     (error 'protocol-error :url url :message "Empty Gopher+ reply"))))
+                     (error 'empty-response :url url :message "Empty Gopher+ reply"))))
     (when (and (plusp (length header)) (not (find (char header 0) "+-")))
       ;; Not a Gopher+ server: it treated the TAB field as noise and sent the
       ;; item (or an error menu).  Fall back to plain handling.
@@ -173,25 +173,41 @@ item URL names (the root menu if URL has no path)."
                     (make-gopher-plus-question :kind kind :prompt (first fields)
                                                :choices (rest fields)))))
 
-(defun send-gopher-plus-answers (conn selector plus answers)
+(defun send-gopher-plus-answers (conn selector plus answers &optional file)
   "Send a Gopher+ form submission: `selector TAB + TAB 1', then a data block
 with one answer per line.  An answer that is a list of strings (an AskL
-question) is sent as its line count followed by the lines."
-  (let ((stream (connection-stream conn)))
+question) is sent as its line count followed by the lines.
+
+FILE, octets, is sent after the answers, as \"the remainder of the
+dataBlock\" (a ChooseF question's file).  With a file the block is counted
+(+N, N the bytes of answers and file together) rather than ended by a lone
+dot, so the file may hold anything."
+  (let* ((stream (connection-stream conn))
+         (crlf #.(coerce #(13 10) '(vector (unsigned-byte 8))))
+         (lines (loop for a in answers
+                      append (if (listp a)
+                                 (cons (princ-to-string (length a)) a)
+                                 (list a))))
+         (body (with-output-to-string (out)
+                 (dolist (line lines) (format out "~A~C~C" line #\Return #\Linefeed)))))
     (flet ((line (s)
              (write-octets stream s)
-             (write-octets stream #.(coerce #(13 10) '(vector (unsigned-byte 8))))))
+             (write-octets stream crlf)))
       (line (format nil "~A~C~A~C1" selector #\Tab plus #\Tab))
-      (line "+-1")
-      (dolist (a answers)
-        (if (listp a)
-            (progn (line (princ-to-string (length a))) (mapc #'line a))
-            (line a)))
-      (line ".")
+      (cond (file
+             (let ((octets (encode-text body)))
+               (line (format nil "+~D" (+ (length octets) (length file))))
+               (write-sequence octets stream)
+               (write-sequence file stream)))
+            (t
+             (line "+-1")
+             (write-octets stream body)
+             (line ".")))
       (force-output stream))))
 
 (defun gopher-plus-submit (url answers &rest fetch-options)
   "Answer the +ASK form of the item at URL.  ANSWERS has one entry per
-question (a string, or a list of strings for an AskL question).  Returns the
-server's RESPONSE."
+question that is not a Note (a string, or a list of strings for an AskL
+question).  A ChooseF question's file goes in FETCH-OPTIONS as
+:GOPHER-PLUS-FILE (a pathname or octets).  Returns the server's RESPONSE."
   (apply #'fetch url :gopher-plus-answers answers fetch-options))

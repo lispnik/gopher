@@ -27,6 +27,7 @@
   (item-type nil)        ; Gopher item type character
   (item-kind nil)        ; Gopher item classification keyword
   (gopher-plus-p nil)    ; Gopher+ item (has attributes)
+  (gopher-plus-ask-p nil) ; Gopher+ item marked `?': it has a +ASK form
   (host nil)             ; Gopher items: the raw menu fields
   (port nil)
   (selector nil))
