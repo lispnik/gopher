@@ -16,7 +16,6 @@ ocicl install                  # dependencies (ocicl/ is gitignored)
 make test                      # hermetic suite
 GOPHER_LIVE_TESTS=1 make test  # plus real servers
 make build                     # bin/gopher via program-op
-make capi capi-test            # libgopher.dylib + gopher.core, C test
 make docs                      # docs/API.md from docstrings (CI checks it's current)
 make certs                     # regenerate test/fixtures/*.pem
 make clean                     # fasls + ASDF cache for this tree
@@ -37,7 +36,7 @@ Serial load order (see `gopher.asd`):
 package → conditions → url → idna → encoding → transport → tofu → document
         → registry → gemtext → gopher → gopher-plus → gemini → titan → spartan
         → nex → parsers → guppy → finger → identity → cache → client → render
-        → docstrings                    (cli and capi are their own systems)
+        → docstrings                    (cli is its own system)
 ```
 
 - `parsers.lisp`: every text format is a LINE-PARSER (feed one line, get the
@@ -72,12 +71,6 @@ package → conditions → url → idna → encoding → transport → tofu → 
   `status-category`), never conditions.
 - Gopher paths are opaque: `?` and `#` are part of the selector, and `%09`
   separates the search and Gopher+ fields.
-
-- `capi/`: `define-alien-callable` entry points saved with
-  `save-lisp-and-die :callable-exports`. `host.c` holds the function pointers
-  the core fills in at `initialize_lisp`. When you add a callable, add it in
-  three places: `*callable-exports*`, a pointer in `host.c` (checked in
-  `gopher_init`), and `gopher.h`.
 
 ## Tests
 

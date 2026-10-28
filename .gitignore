@@ -2,4 +2,3 @@ ocicl
 bin/
 *.fasl
 .claude/
-capi/build/

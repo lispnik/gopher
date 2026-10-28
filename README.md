@@ -2,8 +2,8 @@
 
 A Common Lisp client library for Gopher and the small-web protocols around it.
 It is meant to be the engine of a native macOS browser, so every protocol comes
-back in the same document model and the UI renders one thing. There is a C
-interface for Swift (`capi/`) and a command-line driver (`bin/gopher`).
+back in the same document model and the UI renders one thing. It also builds
+a command-line driver (`bin/gopher`).
 
 | Scheme       | Protocol                                   | Transport            |
 |--------------|--------------------------------------------|----------------------|
@@ -26,7 +26,6 @@ ocicl install                  # restore dependencies into ./ocicl
 make test                      # hermetic suite: in-process servers for every protocol
 GOPHER_LIVE_TESTS=1 make test  # also talk to real servers
 make build                     # bin/gopher
-make capi capi-test            # libgopher.dylib + gopher.core, and the C test
 make docs                      # docs/API.md, generated from the docstrings
 ```
 
@@ -152,13 +151,13 @@ self-signed client certificate (EC P-256 by default; also `:rsa` and
 another thread to shut the socket down. The fetch then signals
 `request-cancelled`.
 
-## Calling it from Swift
+## Using it from a Cocoa app
 
-`capi/` builds `libgopher.dylib` and `gopher.core`, a JSON-in/JSON-out C
-interface (`capi/gopher.h`): fetch, streaming fetch with a line callback,
-cancel, and identity creation, all callable from any thread. See
-[capi/README.md](capi/README.md) for the Xcode setup. This needs an SBCL built
-with `--with-sb-linkable-runtime` (which provides `libsbcl.a`).
+The browser is meant to call this library directly from Lisp (through an
+Objective-C bridge), so there is no C interface. Call `fetch` off the main
+thread. The `:on-lines`, `:on-data` and `:on-progress` callbacks run on the
+fetching thread, so hand their results to the main thread before touching
+AppKit.
 
 ## The driver: `bin/gopher`
 
