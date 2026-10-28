@@ -55,6 +55,11 @@
       (guppy-send socket line)
       (loop
         (check-cancelled request url)
+        ;; The first packet carries data, so the end comes after it.
+        (when (and first-seq eof-seq (<= eof-seq first-seq))
+          (error 'protocol-error :url url
+                                 :message (format nil "The page ends (~D) before it begins (~D)"
+                                                  eof-seq first-seq)))
         (when (complete-p) (return))
         (when (> (elapsed last-heard) timeout)
           (error 'timeout-error :url url :message "Timed out"))
@@ -111,12 +116,16 @@
                      (setf last-ack number
                            last-sent (get-internal-real-time)))))))))
       (when streamer (finish-body-streamer streamer))
-      (let ((body (let ((out (make-array received :element-type '(unsigned-byte 8))) (pos 0))
-                    (loop for s from first-seq below eof-seq
-                          for chunk = (gethash s chunks)
-                          do (replace out chunk :start1 pos)
-                             (incf pos (length chunk)))
-                    out))
+      ;; The page is the packets from the first to the end, and nothing else
+      ;; the server sent: one numbered outside them is not part of it.
+      (let ((body (let* ((pieces (loop for s from first-seq below eof-seq
+                                       collect (gethash s chunks)))
+                         (out (make-array (reduce #'+ pieces :key #'length)
+                                          :element-type '(unsigned-byte 8)))
+                         (pos 0))
+                    (dolist (piece pieces out)
+                      (replace out piece :start1 pos)
+                      (incf pos (length piece)))))
             (mime (if (string= mime "") "text/gemini; charset=utf-8" mime)))
         (if (request-sink request)
             (progn (write-sequence body (request-sink request))

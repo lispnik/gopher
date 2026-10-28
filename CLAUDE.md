@@ -15,6 +15,7 @@ in `test/servers.lisp` are fixtures.
 ocicl install                  # dependencies (ocicl/ is gitignored)
 make test                      # hermetic suite
 GOPHER_LIVE_TESTS=1 make test  # plus real servers
+make fuzz                      # FUZZ_ITERATIONS (20000) random inputs from FUZZ_SEED (1)
 make build                     # bin/gopher via program-op
 make docs                      # docs/API.md from docstrings (CI checks it's current)
 make certs                     # regenerate test/fixtures/*.pem
@@ -80,3 +81,28 @@ available. The Guppy fixture is a real UDP server that can drop or reorder
 packets. CLI tests call `clingon:run` with `gopher/cli:*exit-hook*` rebound,
 so the image doesn't quit. `socks-fixture` is a SOCKS5 relay (optional
 auth). `:request-client-cert :any` accepts any client certificate.
+
+## Fuzzing
+
+`test/fuzz-tests.lisp` throws random and mutated input at everything that
+takes it from outside -- URLs, Punycode, text, MIME types, every document
+parser, Gopher+ attributes, Gemini headers -- and at the readers, through
+hostile servers (TCP and TLS, and a Guppy server whose packet numbers lie).
+`make test` runs 300 iterations from seed 1; `make fuzz` runs more. A failure
+names the property and the smallest input that broke it. Each bug it found
+has a plain test at the end of the file, and the rules they taught:
+
+- Hosts may not hold control characters or URL delimiters (`%09` decoded
+  into one).
+- A malformed Punycode label is a URL-PARSE-ERROR, never a bare ERROR.
+- `percent-decode` keeps a byte-order mark; only document decoding drops one.
+- `url-string` keeps an empty authority (`//`) only before a path that is
+  empty or rooted, and always before a path that begins `//`.
+- Documents decode line by line (`decode-line`), whole and streamed alike, so
+  a stray Latin-1 byte affects its own line only. Whole parsing goes through
+  `parse-body-octets` for this. A final line of only CR is no line.
+- A Gopher text item ends at its first `.` line, whole and streamed.
+- A plain reply to a Gopher+ request is read by the plain reader, with the
+  line already read passed as `:initial`, so it streams.
+- A Guppy page is exactly the packets from the first to the end, and an end
+  at or before the first is a PROTOCOL-ERROR.

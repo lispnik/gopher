@@ -25,6 +25,7 @@ TLS uses cl+ssl, so OpenSSL 3 or later must be installed (Homebrew's is fine).
 ocicl install                  # restore dependencies into ./ocicl
 make test                      # hermetic suite: in-process servers for every protocol
 GOPHER_LIVE_TESTS=1 make test  # also talk to real servers
+make fuzz                      # 20,000 random inputs; FUZZ_ITERATIONS, FUZZ_SEED
 make build                     # bin/gopher
 make docs                      # docs/API.md, generated from the docstrings
 ```

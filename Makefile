@@ -14,7 +14,7 @@ LISP ?= sbcl
 BIN  := bin/gopher
 FIX  := test/fixtures
 
-.PHONY: all test build deps docs certs clean
+.PHONY: all test fuzz build deps docs certs clean
 
 all: test
 
@@ -23,6 +23,14 @@ test:
 	$(LISP) --non-interactive \
 	  --eval '(asdf:load-system :gopher/test)' \
 	  --eval '(uiop:quit (if (gopher/test:run-tests) 0 1))'
+
+# Many more fuzz iterations than `make test' runs; FUZZ_SEED picks the inputs.
+FUZZ_ITERATIONS ?= 20000
+FUZZ_SEED ?= 1
+fuzz:
+	FUZZ_ITERATIONS=$(FUZZ_ITERATIONS) FUZZ_SEED=$(FUZZ_SEED) $(LISP) --non-interactive \
+	  --eval '(asdf:load-system :gopher/test)' \
+	  --eval '(uiop:quit (if (fiveam:results-status (fiveam:run (quote gopher/test::fuzz))) 0 1))'
 
 build:
 	$(LISP) --non-interactive --eval '(asdf:make :gopher/cli)'

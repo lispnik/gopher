@@ -119,8 +119,22 @@ response.  Parsed once, on first call."
       (setf (slot-value response 'document)
             (and (response-success-p response)
                  (response-body response)
-                 (parse-body (response-mime-type response) (response-text-for-parse response)
-                             (response-url response))))))
+                 (response-text-for-parse response)
+                 (parse-body-octets (response-mime-type response) (response-body response)
+                                    (response-url response))))))
+
+(defun parse-body-octets (mime-type octets base-url)
+  "OCTETS, a text body of MIME-TYPE, as a DOCUMENT: decoded line by line,
+exactly as the body streamer decodes it."
+  (let* ((mime (parse-mime-type mime-type))
+         (parser (cond ((string= mime "application/gopher-menu")
+                        (make-instance 'gopher-menu-parser :base-url base-url))
+                       ((string= mime "text/gemini")
+                        (make-instance 'gemtext-parser :base-url base-url))
+                       ((string= mime "text/x-nex-directory")
+                        (make-instance 'nex-directory-parser :base-url base-url))
+                       (t (make-instance 'plain-text-parser)))))
+    (parse-octets-with parser octets :charset (mime-charset mime-type))))
 
 (defun response-text-for-parse (response)
   (let ((mime (parse-mime-type (response-mime-type response))))

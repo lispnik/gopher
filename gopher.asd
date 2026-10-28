@@ -86,6 +86,7 @@
                              (:file "transport-tests")
                              (:file "cli-tests")
                              (:file "feature-tests")
+                             (:file "fuzz-tests")
                              (:file "live-tests"))))
   ;; ASDF ignores what a TEST-OP perform method returns, so a failing suite
   ;; must signal or `asdf:test-system' would report success.

@@ -31,6 +31,23 @@ is tried first when babel knows it, then UTF-8, then Latin-1."
         (ignore-errors (babel:octets-to-string octets :encoding :utf-8 :errorp t))
         (babel:octets-to-string octets :encoding :latin-1))))
 
+(defun octet-lines (octets)
+  "OCTETS split at each LF, as octet vectors without it.  The last is what
+follows the last LF: empty when OCTETS ends with one."
+  (let ((octets (coerce octets '(simple-array (unsigned-byte 8) (*)))))
+    (loop with start = 0
+          for lf = (position 10 octets :start start)
+          collect (subseq octets start lf)
+          while lf
+          do (setf start (1+ lf)))))
+
+(defun decode-line (octets &key charset)
+  "One line of text, decoded as DECODE-TEXT decodes, without a final CR.
+Decoding line by line means a document mixing UTF-8 with Latin-1 (old
+Gopher holes are full of them) has each line read as well as it can be,
+rather than all of it as Latin-1 for one stray byte."
+  (string-right-trim '(#\Return) (decode-text octets :charset charset)))
+
 (defun encode-text (string)
   (babel:string-to-octets string :encoding :utf-8))
 

@@ -80,7 +80,11 @@ UTF-8 encoded.  A malformed escape is left as written."
   "Decode %XX escapes in STRING.  The resulting bytes are read as UTF-8, and
 as Latin-1 if they are not valid UTF-8."
   (if (find #\% string)
-      (decode-text (percent-decode-octets string))
+      ;; Not DECODE-TEXT, which drops a byte-order mark: here %EF%BB%BF is a
+      ;; character like any other.
+      (let ((octets (percent-decode-octets string)))
+        (or (ignore-errors (babel:octets-to-string octets :encoding :utf-8 :errorp t))
+            (babel:octets-to-string octets :encoding :latin-1)))
       string))
 
 (defparameter +unreserved+
@@ -147,7 +151,14 @@ AUTHORITY is \"\" for `scheme:///path'.  PATH is always a string."
           (setf host (if colon (subseq hostport 0 colon) hostport)
                 port-string (when colon (subseq hostport (1+ colon))))))
     (values userinfo
-            (if (find #\: host) (string-downcase host) (host-to-ascii (percent-decode host)))
+            (let ((host (if (find #\: host) (string-downcase host) (host-to-ascii (percent-decode host)))))
+              ;; %09 decodes into a host as readily as a letter does.
+              (when (find-if (lambda (c) (or (<= (char-code c) 32) (= (char-code c) 127)
+                                             (find c "/?#@[]\\%<>^`{|}\"")))
+                             host)
+                (error 'url-parse-error :url original
+                                        :message (format nil "Bad host ~S" host)))
+              host)
             (cond ((or (null port-string) (string= port-string "")) nil)
                   ((every #'digit-char-p port-string)
                    (let ((p (parse-integer port-string)))
@@ -186,8 +197,16 @@ input from a browser's address bar.  Signals URL-PARSE-ERROR."
 NIL, the fragment is left out too, as it must be in a request."
   (with-output-to-string (s)
     (format s "~A:" (url-scheme url))
+    ;; An authority, even an empty one, may only be followed by a path that is
+    ;; empty or begins with a slash: "nex:E" written "nex://E" would make
+    ;; its path a host.
+    ;; And a path beginning "//" needs an authority before it, even an empty
+    ;; one, or it would be read as one (RFC 3986, section 3.3).
     (when (or (plusp (length (url-host url))) (url-userinfo url)
-              (default-port (url-scheme url)))
+              (alexandria:starts-with-subseq "//" (url-path url))
+              (and (default-port (url-scheme url))
+                   (let ((path (url-path url)))
+                     (or (zerop (length path)) (char= #\/ (char path 0))))))
       (write-string "//" s)
       (when (url-userinfo url) (format s "~A@" (url-userinfo url)))
       (if (find #\: (url-host url))

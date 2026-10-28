@@ -130,8 +130,17 @@ DOCUMENT-LINEs it completes."))
 
 (defun parse-text-with (parser text)
   "Run PARSER over all of TEXT and return the DOCUMENT."
-  (let ((lines '())
-        (raw (split-lines text)))
+  (parse-lines-with parser (split-lines text)))
+
+(defun parse-octets-with (parser octets &key charset)
+  "Run PARSER over OCTETS, a body, decoded line by line (see DECODE-LINE):
+the same lines the body streamer delivers."
+  (parse-lines-with parser (mapcar (lambda (l) (decode-line l :charset charset))
+                                   (octet-lines octets))))
+
+(defun parse-lines-with (parser raw)
+  "Run PARSER over RAW, the lines of a document, and return the DOCUMENT."
+  (let ((lines '()))
     ;; A final line end doesn't start an empty last line.
     (when (and raw (string= (car (last raw)) "")) (setf raw (butlast raw)))
     (dolist (l raw)
@@ -199,15 +208,18 @@ DOCUMENT-LINEs it completes."))
           (setf (fill-pointer pending) 0)
           (loop for b across rest do (vector-push-extend b pending))
           (deliver-lines streamer
-                         (butlast (split-lines (decode-text complete
-                                                            :charset (body-streamer-charset streamer))))))))))
+                         (mapcar (lambda (l) (decode-line l :charset (body-streamer-charset streamer)))
+                                 (butlast (octet-lines complete)))))))))
 
 (defun finish-body-streamer (streamer)
   (alexandria:when-let ((parser (body-streamer-parser streamer)))
     (let ((pending (body-streamer-pending streamer)))
       (when (plusp (length pending))
-        (deliver-lines streamer (list (string-right-trim '(#\Return)
-                                                         (decode-text pending :charset (body-streamer-charset streamer)))))
+        (let ((line (decode-line pending :charset (body-streamer-charset streamer))))
+          ;; As in PARSE-LINES-WITH: what follows the last line end is a
+          ;; line only if there is something in it.
+          (when (plusp (length line))
+            (deliver-lines streamer (list line))))
         (setf (fill-pointer pending) 0)))
     (alexandria:when-let ((last (parser-finish parser)))
       (funcall (body-streamer-on-lines streamer) last))))

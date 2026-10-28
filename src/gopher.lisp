@@ -108,20 +108,22 @@ consulted when the type itself does not say (I, s, ;, d, 9, ...)."
 ;;; Text items: the `.' terminator line and dot-stuffing
 
 (defun gopher-unstuff-text (octets)
-  "Remove a trailing `.' terminator line from OCTETS and un-stuff lines that
-begin with `..'.  Returns new octets."
+  "OCTETS, a Gopher text item, up to its `.' terminator line, with lines that
+begin with `..' un-stuffed.  Returns new octets.  The text ends at the first
+line that is only `.' (RFC 1436): whatever a server sends after it is not
+part of the item.  This is what the streaming parser does too."
   (let* ((n (length octets))
-         (end (cond ((and (>= n 3) (= (aref octets (- n 3)) 46)
-                          (= (aref octets (- n 2)) 13) (= (aref octets (- n 1)) 10)
-                          (or (= n 3) (= (aref octets (- n 4)) 10)))
-                     (- n 3))
-                    ((and (>= n 2) (= (aref octets (- n 2)) 46) (= (aref octets (- n 1)) 10)
-                          (or (= n 2) (= (aref octets (- n 3)) 10)))
-                     (- n 2))
-                    ((and (>= n 1) (= (aref octets (- n 1)) 46)
-                          (or (= n 1) (= (aref octets (- n 2)) 10)))
-                     (- n 1))
-                    (t n)))
+         (end (loop with start = 0
+                    while (< start n)
+                    do (let* ((lf (position 10 octets :start start))
+                              (stop (or lf n))
+                              (content-end (if (and (> stop start) (= 13 (aref octets (1- stop))))
+                                               (1- stop)
+                                               stop)))
+                         (when (and (= (- content-end start) 1) (= 46 (aref octets start)))
+                           (return start))
+                         (setf start (if lf (1+ lf) n)))
+                    finally (return n)))
          (out (make-array end :element-type '(unsigned-byte 8) :fill-pointer 0)))
     (loop with line-start = t
           for i from 0 below end
@@ -264,7 +266,9 @@ links -- the error text, else NIL."
 (defun gopher-response-mime-type (type selector)
   (or (gopher-item-mime-type type selector) "application/octet-stream"))
 
-(defun read-gopher-response (conn request url type selector)
+(defun read-gopher-response (conn request url type selector &key initial)
+  "Read a plain Gopher reply.  INITIAL is octets of it already read (the line
+a Gopher+ request read before finding it was not Gopher+)."
   (let* ((kind (gopher-item-kind type))
          (textual (member kind '(:menu :text :search :mirror :cso)))
          (mime (gopher-response-mime-type type selector))
@@ -273,7 +277,7 @@ links -- the error text, else NIL."
     ;; COUNT is what came over the wire.  With a :SINK the body is NIL, and
     ;; the count is the only record of how much was written there.
     (setf (values body count)
-          (read-body (connection-stream conn) request url
+          (read-body (connection-stream conn) request url :initial initial
                      :parse-as (if (eq kind :text) (cons mime :gopher-text) mime)))
     (when (and body textual (not (eq kind :menu)) (not (eq kind :search)) (not (eq kind :mirror)))
       (setf body (gopher-unstuff-text body)))

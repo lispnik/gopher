@@ -27,10 +27,12 @@
                      (error 'empty-response :url url :message "Empty Gopher+ reply"))))
     (when (and (plusp (length header)) (not (find (char header 0) "+-")))
       ;; Not a Gopher+ server: it treated the TAB field as noise and sent the
-      ;; item (or an error menu).  Fall back to plain handling.
-      (let ((rest (read-body stream request url)))
-        (return-from read-gopher-plus-response
-          (gopher-plain-fallback conn url type selector header rest))))
+      ;; item (or an error menu).  Read it as a plain reply, the line already
+      ;; read and all, so that it streams and is un-stuffed as one would be.
+      (return-from read-gopher-plus-response
+        (read-gopher-response conn request url type selector
+                              :initial (concatenate '(vector (unsigned-byte 8))
+                                                    (encode-text header) #(13 10)))))
     (multiple-value-bind (ok n) (parse-gopher-plus-length header url)
       (let* ((view (and (> (length plus) 1) (char= (char plus 0) #\+) (subseq plus 1)))
              (mime (cond ((member plus '("!" "$") :test #'string=) "text/x-gopher-plus-attributes")
@@ -47,15 +49,6 @@
             (make-response url :gopher :permanent-failure
                            :meta (trim-ws (decode-text (or body #())))
                            :mime-type "text/plain" :body body :connection conn))))))
-
-(defun gopher-plain-fallback (conn url type selector first-line rest)
-  (let* ((body (concatenate '(vector (unsigned-byte 8))
-                            (encode-text first-line) #(13 10) (or rest #())))
-         (mime (gopher-response-mime-type type selector))
-         (doc (parse-gopher-menu (decode-text body) url))
-         (err (gopher-error-text doc)))
-    (make-response url :gopher (if err :not-found :success)
-                   :meta (or err mime) :mime-type mime :body body :connection conn)))
 
 ;;; Attributes
 

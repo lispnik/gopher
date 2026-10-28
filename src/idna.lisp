@@ -69,8 +69,8 @@
     (get-output-stream-string out)))
 
 (defun punycode-decode (string)
-  "Decode a Punycode STRING (without \"xn--\").  Signals an error if it is
-malformed."
+  "Decode a Punycode STRING (without \"xn--\").  Signals URL-PARSE-ERROR if
+it is malformed or decodes to something that is not a character."
   (let* ((dash (position #\- string :from-end t))
          (output (coerce (if dash (subseq string 0 dash) "") 'list))
          (i 0) (n +puny-initial-n+) (bias +puny-initial-bias+)
@@ -80,7 +80,9 @@ malformed."
                (loop for k from +puny-base+ by +puny-base+
                      do (let ((digit (and (< pos (length string))
                                           (puny-digit-value (char string pos)))))
-                          (unless digit (error "Bad Punycode ~S" string))
+                          (unless digit
+                            (error 'url-parse-error :url string
+                                                    :message (format nil "Bad Punycode ~S" string)))
                           (incf pos)
                           (incf i (* digit w))
                           (let ((tt (puny-threshold k bias)))
@@ -90,6 +92,10 @@ malformed."
                  (setf bias (puny-adapt (- i oldi) len (zerop oldi)))
                  (incf n (floor i len))
                  (setf i (mod i len))
+                 ;; Past the last character, or a surrogate: no such letter.
+                 (when (or (> n #x10FFFF) (<= #xD800 n #xDFFF))
+                   (error 'url-parse-error :url string
+                                           :message (format nil "Bad Punycode ~S" string)))
                  (setf output (append (subseq output 0 i) (list (code-char n)) (nthcdr i output)))
                  (incf i))))
     (coerce output 'string)))

@@ -335,8 +335,8 @@ HOST with xn-- labels decoded.  Malformed labels are left as they are.
 (punycode-decode string)
 ```
 
-Decode a Punycode STRING (without "xn--").  Signals an error if it is
-malformed.
+Decode a Punycode STRING (without "xn--").  Signals URL-PARSE-ERROR if
+it is malformed or decodes to something that is not a character.
 
 ### `punycode-encode` — function
 
@@ -944,8 +944,10 @@ What :TLS :TRY found at HOST:PORT: :TLS, :PLAIN, or NIL if never tried.
 (gopher-unstuff-text octets)
 ```
 
-Remove a trailing `.' terminator line from OCTETS and un-stuff lines that
-begin with `..'.  Returns new octets.
+OCTETS, a Gopher text item, up to its `.' terminator line, with lines that
+begin with `..' un-stuffed.  Returns new octets.  The text ends at the first
+line that is only `.' (RFC 1436): whatever a server sends after it is not
+part of the item.  This is what the streaming parser does too.
 
 ## gopher-plus
 
